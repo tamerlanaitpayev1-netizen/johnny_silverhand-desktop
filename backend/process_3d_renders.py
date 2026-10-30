@@ -1,113 +1,111 @@
 """
-Обработчик 3D-рендеров Джонни Сильверхенда (REDengine 4 / Cyberpunk 2077 стиль).
-Превращает рендеры из assets/raw_renders/ в чистые прозрачные PNG-спрайты с альфа-каналом,
-неоновым контурным свечением биочипа Relic (#00F0FF) и хроматическим RGB-глитчем.
+Сборка 5 игровых 3D-состояний Джонни Сильверхенда из оригинальных рендеров Cyberpunk 2077 (REDengine 4).
+Создаёт в assets/sprites/:
+  - johnny_idle.png   (оригинальный 3D-рендер Джонни в очках-авиаторах с дымящимся чипом/сигаретой)
+  - johnny_talk.png   (оригинальный 3D-рендер Джонни со снятыми очками в руке во время диалога)
+  - johnny_drag.png   (крупный план 3D-рендера Джонни с суровым взглядом при перетаскивании)
+  - johnny_guitar.png (3D-рендер Джонни с его культовой электрогитарой Deluze Orphean из Cyberpunk 2077)
+  - johnny_glitch.png (эффект сбоя биочипа Relic: RGB-хроматическая аберрация + сдвиг полос #00F0FF / #FCEE09)
 """
 
 from pathlib import Path
 import numpy as np
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT_DIR / "assets" / "raw_renders"
 SPRITES_DIR = ROOT_DIR / "assets" / "sprites"
 SPRITES_DIR.mkdir(parents=True, exist_ok=True)
 
-TARGET_SIZE = (420, 520)
+TARGET_SIZE = (480, 600)
 
 
-def extract_alpha_from_black_bg(img: Image.Image) -> Image.Image:
-    """Удаляет чёрный студийный фон (#000000) с мягким сглаживанием краёв и сохранением полутеней."""
+def fit_and_grade_render(img: Image.Image, add_relic_rim: bool = True) -> Image.Image:
+    """Кадрирует прозрачный 3D-рендер из Cyberpunk 2077, масштабирует в высоком разрешении и добавляет контур Relic."""
     rgba = img.convert("RGBA")
-    arr = np.array(rgba, dtype=np.float32)
-    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+    bbox = rgba.getbbox()
+    if bbox:
+        rgba = rgba.crop(bbox)
 
-    # Яркость пикселя (максимум по каналам + взвешенная яркость)
-    lum = np.maximum(np.maximum(r, g), b)
+    rgba.thumbnail((TARGET_SIZE[0] - 28, TARGET_SIZE[1] - 20), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", TARGET_SIZE, (0, 0, 0, 0))
+    ox = (TARGET_SIZE[0] - rgba.width) // 2
+    oy = TARGET_SIZE[1] - rgba.height - 4
+    canvas.paste(rgba, (ox, oy), rgba)
 
-    # Порог отсечения фона с плавным переходом (soft matte между яркостью 10 и 38)
-    alpha = np.clip((lum - 10.0) / 28.0, 0.0, 1.0)
+    if not add_relic_rim:
+        return canvas
 
-    # Заполняем внутреннюю область силуэта с помощью морфологического закрытия по маске
-    mask_img = Image.fromarray((alpha * 255).astype(np.uint8), mode="L")
-    # Убираем мелкий шум на фоне и сглаживаем границу
-    mask_closed = mask_img.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.MinFilter(5))
-    mask_smooth = mask_closed.filter(ImageFilter.GaussianBlur(radius=1.2))
+    # Создаём мягкое голубое свечение энграммы Relic (#00F0FF) вокруг контура игровой модели
+    alpha = canvas.split()[3]
+    dilated = alpha.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(4.0))
+    glow = Image.new("RGBA", TARGET_SIZE, (0, 240, 255, 0))
+    glow.putalpha(ImageEnhance.Brightness(dilated).enhance(0.55))
 
-    # Внутри уверенного силуэта сохраняем 100% непрозрачность даже для тёмных волос и жилета
-    from scipy.ndimage import binary_fill_holes
-    binary_core = np.array(mask_closed) > 42
-    filled_core = binary_fill_holes(binary_core)
+    combined = Image.alpha_composite(glow, canvas)
 
-    final_alpha = np.where(filled_core, np.maximum(np.array(mask_smooth), 245), np.array(mask_smooth))
-    arr[:, :, 3] = final_alpha
-
-    # Убираем тёмный ореол по самому краю (de-fringe)
-    edge_zone = (final_alpha > 15) & (final_alpha < 230)
-    arr[edge_zone, 0] = np.clip(arr[edge_zone, 0] * 0.8, 0, 255)
-    arr[edge_zone, 1] = np.clip(arr[edge_zone, 1] * 1.1 + 25, 0, 255)  # лёгкий голубой оттенок Relic на краях
-    arr[edge_zone, 2] = np.clip(arr[edge_zone, 2] * 1.2 + 40, 0, 255)
+    # Едва заметные голографические линии сканирования Relic поверх модели
+    arr = np.array(combined, dtype=np.float32)
+    for y in range(0, TARGET_SIZE[1], 4):
+        mask = arr[y, :, 3] > 25
+        arr[y, mask, 0] = np.clip(arr[y, mask, 0] * 0.94, 0, 255)
+        arr[y, mask, 1] = np.clip(arr[y, mask, 1] * 0.98 + 5, 0, 255)
+        arr[y, mask, 2] = np.clip(arr[y, mask, 2] * 1.00 + 9, 0, 255)
 
     return Image.fromarray(arr.astype(np.uint8), mode="RGBA")
 
 
-def apply_relic_hologram_grade(img: Image.Image, add_scanlines: bool = True) -> Image.Image:
-    """Добавляет фирменный киберпанк-грейдинг энграммы Relic (контраст, лёгкие голографические линии и контурное свечение)."""
-    # Кадрируем по полезной области (bbox) и масштабируем под размер оверлея
-    bbox = img.getbbox()
-    if bbox:
-        img = img.crop(bbox)
+def build_guitar_pose(johnny_img: Image.Image, guitar_render: Image.Image) -> Image.Image:
+    """Совмещает 3D-рендер Джонни с рендером его игровой электрогитары Deluze Orphean."""
+    base = fit_and_grade_render(johnny_img, add_relic_rim=True)
 
-    img.thumbnail((TARGET_SIZE[0] - 24, TARGET_SIZE[1] - 24), Image.Resampling.LANCZOS)
-    canvas = Image.new("RGBA", TARGET_SIZE, (0, 0, 0, 0))
-    ox = (TARGET_SIZE[0] - img.width) // 2
-    oy = TARGET_SIZE[1] - img.height - 6
-    canvas.paste(img, (ox, oy), img)
+    # Вырезаем правую (лицевую) половину рендера гитары Silverhand_guitar_render.png
+    g_rgba = guitar_render.convert("RGBA")
+    gw, gh = g_rgba.size
+    front_guitar = g_rgba.crop((gw // 2, 0, gw, gh))
+    gbbox = front_guitar.getbbox()
+    if gbbox:
+        front_guitar = front_guitar.crop(gbbox)
 
-    # Создаём неоновый голубой контур биочипа Relic (#00F0FF) вокруг силуэта
-    alpha = canvas.split()[3]
-    dilated = alpha.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(3.5))
-    glow_layer = Image.new("RGBA", TARGET_SIZE, (0, 240, 255, 0))
-    glow_alpha = ImageEnhance.Brightness(dilated).enhance(0.65)
-    glow_layer.putalpha(glow_alpha)
+    # Масштабируем и поворачиваем электрогитару в рок-н-ролльный наклон на груди Джонни
+    front_guitar.thumbnail((250, 440), Image.Resampling.LANCZOS)
+    rotated_guitar = front_guitar.rotate(-52, resample=Image.Resampling.BICUBIC, expand=True)
 
-    combined = Image.alpha_composite(glow_layer, canvas)
+    # Добавляем неоновый жёлто-голубой контур вокруг гитары
+    g_alpha = rotated_guitar.split()[3]
+    g_glow_mask = g_alpha.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(3.0))
+    g_glow = Image.new("RGBA", rotated_guitar.size, (252, 238, 9, 0))
+    g_glow.putalpha(ImageEnhance.Brightness(g_glow_mask).enhance(0.75))
+    guitar_layered = Image.alpha_composite(g_glow, rotated_guitar)
 
-    if add_scanlines:
-        # Тонкие полупрозрачные линии сканирования Relic только поверх непрозрачных пикселей персонажа
-        arr = np.array(combined, dtype=np.float32)
-        for y in range(0, TARGET_SIZE[1], 4):
-            mask = arr[y, :, 3] > 20
-            arr[y, mask, 0] = np.clip(arr[y, mask, 0] * 0.90, 0, 255)
-            arr[y, mask, 1] = np.clip(arr[y, mask, 1] * 0.96 + 8, 0, 255)
-            arr[y, mask, 2] = np.clip(arr[y, mask, 2] * 0.98 + 12, 0, 255)
-        combined = Image.fromarray(arr.astype(np.uint8), mode="RGBA")
-
-    return combined
+    out = base.copy()
+    gx = (TARGET_SIZE[0] - guitar_layered.width) // 2 + 12
+    gy = TARGET_SIZE[1] - guitar_layered.height - 25
+    out.paste(guitar_layered, (gx, gy), guitar_layered)
+    return out
 
 
 def create_relic_glitch_variant(base_sprite: Image.Image) -> Image.Image:
-    """Создаёт аутентичный эффект сбоя биочипа Relic (RGB-сдвиг каналов + нарезка полос + жёлто-голубые артефакты)."""
+    """Аутентичный сбой биочипа Relic из Cyberpunk 2077: RGB-сдвиг и горизонтальные разрывы голограммы."""
     arr = np.array(base_sprite, dtype=np.uint8)
     h, w, _ = arr.shape
     out = arr.copy()
 
-    # Хроматическая аберрация (сдвиг красного канала влево, голубого вправо)
-    shift = 7
+    # Хроматическая аберрация (сдвиг красного и голубого каналов)
+    shift = 9
     out[:, shift:, 0] = arr[:, :-shift, 0]
     out[:, :-shift, 1] = arr[:, shift:, 1]
     out[:, :-shift, 2] = arr[:, shift:, 2]
 
-    # Горизонтальные сдвиги полос (slice displacement)
+    # Сдвиги полос (Relic Malfunction)
     slices = [
-        (int(h * 0.14), int(h * 0.21), -16),
-        (int(h * 0.34), int(h * 0.42), 18),
-        (int(h * 0.56), int(h * 0.63), -14),
-        (int(h * 0.75), int(h * 0.82), 15),
+        (int(h * 0.12), int(h * 0.19), -18),
+        (int(h * 0.31), int(h * 0.39), 22),
+        (int(h * 0.52), int(h * 0.60), -16),
+        (int(h * 0.72), int(h * 0.79), 19),
     ]
     for y1, y2, dx in slices:
         out[y1:y2] = np.roll(out[y1:y2], dx, axis=1)
-        # Подсвечиваем края сбоя жёлтым (#FCEE09) и голубым (#00F0FF)
         mask = out[y1, :, 3] > 30
         out[y1 : min(y1 + 3, h), mask, :3] = [252, 238, 9]
         mask2 = out[y2 - 1, :, 3] > 30
@@ -116,35 +114,31 @@ def create_relic_glitch_variant(base_sprite: Image.Image) -> Image.Image:
     return Image.fromarray(out, mode="RGBA")
 
 
-def process_all() -> None:
-    mapping = {
-        "idle": RAW_DIR / "raw_idle.png",
-        "talk": RAW_DIR / "raw_talk.png",
-        "guitar": RAW_DIR / "raw_guitar.png",
-        "drag": RAW_DIR / "raw_drag.png",
+def build_all_game_sprites() -> None:
+    idle_raw = Image.open(RAW_DIR / "db_2077.png")
+    talk_raw = Image.open(RAW_DIR / "cosplay_01.png")
+    drag_raw = Image.open(RAW_DIR / "Silverhand_render.png")
+    guitar_raw = Image.open(RAW_DIR / "Silverhand_guitar_render.png")
+
+    idle_sprite = fit_and_grade_render(idle_raw)
+    talk_sprite = fit_and_grade_render(talk_raw)
+    drag_sprite = fit_and_grade_render(drag_raw)
+    guitar_sprite = build_guitar_pose(idle_raw, guitar_raw)
+    glitch_sprite = create_relic_glitch_variant(idle_sprite)
+
+    sprites = {
+        "idle": idle_sprite,
+        "talk": talk_sprite,
+        "drag": drag_sprite,
+        "guitar": guitar_sprite,
+        "glitch": glitch_sprite,
     }
 
-    processed_sprites = {}
-    for state, raw_path in mapping.items():
-        if not raw_path.exists():
-            print(f"[WARN] Missing raw render: {raw_path}")
-            continue
-        raw_img = Image.open(raw_path)
-        cutout = extract_alpha_from_black_bg(raw_img)
-        graded = apply_relic_hologram_grade(cutout, add_scanlines=True)
-        out_path = SPRITES_DIR / f"johnny_{state}.png"
-        graded.save(out_path, format="PNG")
-        processed_sprites[state] = graded
-        print(f"[OK] Saved {out_path}")
-
-    # Генерируем johnny_glitch.png на основе idle или talk
-    base_for_glitch = processed_sprites.get("talk") or processed_sprites.get("idle")
-    if base_for_glitch is not None:
-        glitch_img = create_relic_glitch_variant(base_for_glitch)
-        glitch_path = SPRITES_DIR / "johnny_glitch.png"
-        glitch_img.save(glitch_path, format="PNG")
-        print(f"[OK] Saved {glitch_path}")
+    for name, sp in sprites.items():
+        out_path = SPRITES_DIR / f"johnny_{name}.png"
+        sp.save(out_path, format="PNG")
+        print(f"[OK] Saved authentic game sprite: {out_path} ({sp.size})")
 
 
 if __name__ == "__main__":
-    process_all()
+    build_all_game_sprites()

@@ -4,11 +4,13 @@ backend/__pycache__/
 backend/temp_audio/
 *.pyc
 
-# RVC large model weights (keep directory structure)
+# RVC large model weights & raw render cache
 backend/models/johnny_ru/*.pth
 backend/models/johnny_ru/*.index
+assets/raw_renders/
 
 # .NET build artifacts
 frontend/bin/
 frontend/obj/
 release/*.pdb
+
