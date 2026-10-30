@@ -1,6 +1,6 @@
-// MainWindow.xaml.cs — C# (.NET WPF) Десктопный компаньон Джонни Сильверхенд (Этапы 3, 5, 6, 7)
-// Отрисовывает прозрачный оверлей поверх окон Windows, привязывается к заголовкам активных окон (через user32.dll),
-// переключает 5 состояний спрайтов, запускает фоновый Python-сервер, поддерживает системный трей и хоткей Ctrl+Alt+H.
+// MainWindow.xaml.cs — C# (.NET WPF) Десктопный компаньон Джонни Сильверхенд (Игровая 3D-голограмма Relic)
+// Поддерживает 60 FPS анимацию дыхания и голографического шлейфа, аудио-эквалайзер речи,
+// привязку к окнам Windows (user32.dll), быструю панель вызова и глобальные хоткеи Alt+J / Ctrl+Alt+H.
 
 using System;
 using System.Collections.Generic;
@@ -23,7 +23,7 @@ namespace JohnnyOverlay
 {
     public partial class MainWindow : Window
     {
-        // --- Win32 API (user32.dll) для отслеживания открытых окон и глобального хоткея Ctrl+Alt+H ---
+        // --- Win32 API (user32.dll) для отслеживания открытых окон и глобальных хоткеев ---
         [DllImport("user32.dll")]
         private static extern IntPtr GetForegroundWindow();
 
@@ -40,9 +40,11 @@ namespace JohnnyOverlay
         private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
         private const int HOTKEY_ID_TOGGLE_HIDE = 9077;
+        private const int HOTKEY_ID_QUICK_CHAT = 9078;
         private const uint MOD_ALT = 0x0001;
         private const uint MOD_CONTROL = 0x0002;
         private const uint VK_H = 0x48;
+        private const uint VK_J = 0x4A;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct RECT
@@ -53,10 +55,11 @@ namespace JohnnyOverlay
             public int Bottom;
         }
 
-        private readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(40) };
+        private readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
         private readonly MediaPlayer _player = new MediaPlayer();
         private readonly DispatcherTimer _windowTrackerTimer;
         private readonly DispatcherTimer _glitchTimer;
+        private readonly DispatcherTimer _animTimer;
         private readonly DispatcherTimer _checkInTimer;
         private readonly Random _rng = new Random();
 
@@ -66,10 +69,12 @@ namespace JohnnyOverlay
         private Forms.NotifyIcon? _trayIcon;
 
         private bool _isDragging = false;
+        private bool _isSpeaking = false;
         private bool _snapToActiveWindow = true;
         private bool _pseudoendotrizineMode = true; // Разрешить Джонни управлять ПК
         private bool _proactiveCheckInEnabled = true;
         private int _glitchTicksRemaining = 0;
+        private double _animPhase = 0.0;
         private string _currentSpriteState = "idle";
         private string _postGlitchSpriteState = "idle";
 
@@ -81,22 +86,32 @@ namespace JohnnyOverlay
             LoadSprites();
             InitializeTrayIcon();
 
-            // Стартовая позиция — правый нижний угол над панелью задач
+            // Стартовая позиция — правый нижний угол над панелью задач (всегда в пределах экрана)
             var workArea = SystemParameters.WorkArea;
-            Left = workArea.Right - Width - 40;
-            Top = workArea.Bottom - Height;
+            Left = workArea.Right - Width - 24;
+            Top = workArea.Bottom - Height - 8;
 
             // Когда аудиозапись реплики заканчивается — возвращаем Джонни в состояние idle
             _player.MediaEnded += (_, _) =>
             {
+                _isSpeaking = false;
+                VoiceEqPanel.Visibility = Visibility.Collapsed;
                 _postGlitchSpriteState = "idle";
                 SetSpriteState("idle");
             };
 
-            // Таймер отслеживания активного окна (чтобы Джонни мог сидеть на заголовке окна)
+            // Таймер плавной 30 FPS анимации живого дыхания, луча сканирования и эквалайзера
+            _animTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(33)
+            };
+            _animTimer.Tick += OnAnimationTick;
+            _animTimer.Start();
+
+            // Таймер отслеживания активного окна (чтобы Джонни мог сидеть около активного окна, не уходя за край экрана)
             _windowTrackerTimer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromMilliseconds(250)
+                Interval = TimeSpan.FromMilliseconds(200)
             };
             _windowTrackerTimer.Tick += OnWindowTrackerTick;
             _windowTrackerTimer.Start();
@@ -108,7 +123,7 @@ namespace JohnnyOverlay
             };
             _glitchTimer.Tick += OnGlitchTick;
 
-            // Таймер фоновых реакций «Check in on me» (Этап 6 — раз в 12 минут комментирует активное окно/игру)
+            // Таймер фоновых реакций «Check in on me» (раз в 12 минут комментирует активное окно/игру)
             _checkInTimer = new DispatcherTimer
             {
                 Interval = TimeSpan.FromMinutes(12)
@@ -119,7 +134,7 @@ namespace JohnnyOverlay
             SourceInitialized += OnWindowSourceInitialized;
             Closed += OnWindowClosed;
 
-            // Автозапуск Python-сервера (Этап 7) и приветственная фраза
+            // Автозапуск Python-сервера и приветственная фраза
             Loaded += async (_, _) =>
             {
                 await EnsurePythonBackendRunningAsync();
@@ -130,7 +145,6 @@ namespace JohnnyOverlay
 
         private static string ResolveProjectRoot()
         {
-            // Ищем корень проекта, где лежат папки backend и assets
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             DirectoryInfo? dir = new DirectoryInfo(baseDir);
             while (dir != null)
@@ -145,9 +159,9 @@ namespace JohnnyOverlay
             return Directory.GetCurrentDirectory();
         }
 
-        // --- Этап 5: Загрузка и переключение 5 состояний спрайтов ---
-        private void LoadSprites()
+        public void LoadSprites()
         {
+            _sprites.Clear();
             string spritesDir = Path.Combine(_projectRoot, "assets", "sprites");
             string[] states = { "idle", "talk", "drag", "guitar", "glitch" };
 
@@ -161,6 +175,7 @@ namespace JohnnyOverlay
                         var bmp = new BitmapImage();
                         bmp.BeginInit();
                         bmp.CacheOption = BitmapCacheOption.OnLoad;
+                        bmp.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
                         bmp.UriSource = new Uri(filePath, UriKind.Absolute);
                         bmp.EndInit();
                         bmp.Freeze();
@@ -168,7 +183,7 @@ namespace JohnnyOverlay
                     }
                     catch
                     {
-                        // Игнорируем повреждённый файл и используем fallback
+                        // Игнорируем ошибку чтения отдельного файла
                     }
                 }
             }
@@ -177,11 +192,13 @@ namespace JohnnyOverlay
             {
                 FallbackCard.Visibility = Visibility.Collapsed;
                 JohnnySpriteImage.Visibility = Visibility.Visible;
-                SetSpriteState("idle");
+                JohnnyGhostImage.Visibility = Visibility.Visible;
+                SetSpriteState(_currentSpriteState);
             }
             else
             {
                 JohnnySpriteImage.Visibility = Visibility.Collapsed;
+                JohnnyGhostImage.Visibility = Visibility.Collapsed;
                 FallbackCard.Visibility = Visibility.Visible;
             }
         }
@@ -192,14 +209,56 @@ namespace JohnnyOverlay
             if (_sprites.TryGetValue(state, out var bmp))
             {
                 JohnnySpriteImage.Source = bmp;
+                JohnnyGhostImage.Source = bmp;
             }
             else if (_sprites.TryGetValue("idle", out var idleBmp))
             {
                 JohnnySpriteImage.Source = idleBmp;
+                JohnnyGhostImage.Source = idleBmp;
             }
         }
 
-        // --- Этап 7: Автозапуск фонового Python-сервера из C# ---
+        private void OnAnimationTick(object? sender, EventArgs e)
+        {
+            _animPhase += 0.11;
+
+            // 1. Бегущий голографический луч сканирования по высоте 3D-рендера
+            double scanY = ((Math.Sin(_animPhase * 0.7) + 1.0) * 0.5) * 265.0 + 10.0;
+            ScanlineTranslate.Y = scanY;
+
+            // 2. Живое дыхание и микродвижение 3D-персонажа
+            if (_glitchTicksRemaining <= 0)
+            {
+                if (_isSpeaking)
+                {
+                    // Во время речи Джонни слегка покачивается в такт голосу, а эквалайзер пульсирует
+                    AvatarScale.ScaleY = 1.0 + Math.Sin(_animPhase * 2.6) * 0.016;
+                    AvatarScale.ScaleX = 1.0 + Math.Cos(_animPhase * 1.9) * 0.010;
+                    GhostTranslate.X = Math.Sin(_animPhase * 3.5) * 5.0;
+                    GhostTranslate.Y = Math.Cos(_animPhase * 2.5) * 2.0;
+
+                    EqBar1.Height = _rng.Next(4, 15);
+                    EqBar2.Height = _rng.Next(6, 16);
+                    EqBar3.Height = _rng.Next(4, 14);
+                    EqBar4.Height = _rng.Next(5, 16);
+
+                    // Живое чередование кадров talk <-> idle при длинной реплике для эффекта артикуляции
+                    if (((int)(_animPhase * 2.2)) % 5 == 0 && _currentSpriteState != "guitar")
+                        SetSpriteState("idle");
+                    else if (_currentSpriteState != "guitar")
+                        SetSpriteState("talk");
+                }
+                else
+                {
+                    // Спокойное дыхание в режиме ожидания (idle / guitar)
+                    AvatarScale.ScaleY = 1.0 + Math.Sin(_animPhase * 0.85) * 0.011;
+                    AvatarScale.ScaleX = 1.0 + Math.Sin(_animPhase * 0.85) * 0.005;
+                    GhostTranslate.X = -3.0 + Math.Sin(_animPhase * 0.6) * 2.0;
+                    GhostTranslate.Y = 0;
+                }
+            }
+        }
+
         private async Task EnsurePythonBackendRunningAsync()
         {
             if (await IsBackendHealthyAsync())
@@ -225,7 +284,6 @@ namespace JohnnyOverlay
                 };
                 _backendProcess = Process.Start(psi);
 
-                // Ждём до 8 секунд, пока FastAPI поднимется на 127.0.0.1:8077
                 for (int i = 0; i < 16; i++)
                 {
                     await Task.Delay(500);
@@ -235,7 +293,7 @@ namespace JohnnyOverlay
             }
             catch
             {
-                // Если не удалось запустить автоматически, пользователь увидит подсказку в облаке чата
+                // Ошибка автозапуска отобразится при запросе в чат
             }
         }
 
@@ -253,12 +311,11 @@ namespace JohnnyOverlay
             }
         }
 
-        // --- Этап 7: Системный трей Windows (NotifyIcon) и глобальный хоткей Ctrl+Alt+H ---
         private void InitializeTrayIcon()
         {
             _trayIcon = new Forms.NotifyIcon
             {
-                Text = "Johnny Silverhand — Relic Engram (Ctrl+Alt+H)",
+                Text = "Johnny Silverhand — Relic Engram (Alt+J чат / Ctrl+Alt+H скрыть)",
                 Visible = true
             };
 
@@ -280,19 +337,20 @@ namespace JohnnyOverlay
             }
 
             var trayMenu = new Forms.ContextMenuStrip();
+            trayMenu.Items.Add("💬 Написать Джонни (Alt+J)", null, (_, _) => Dispatcher.Invoke(OpenChatBox));
             trayMenu.Items.Add("Показать / Скрыть Джонни (Ctrl+Alt+H)", null, (_, _) => Dispatcher.Invoke(ToggleOverlayVisibility));
-            trayMenu.Items.Add("Прокомментировать экран (Vision)", null, async (_, _) =>
+            trayMenu.Items.Add("👁 Прокомментировать экран (Vision)", null, async (_, _) =>
                 await Dispatcher.InvokeAsync(() => AskJohnnyAsync("Посмотри на мой экран и прокомментируй, чем я сейчас занимаюсь.", watchScreen: true)));
-            trayMenu.Items.Add("Переключить Псевдоэндотризин (Управление ПК)", null, (_, _) =>
+            trayMenu.Items.Add("💊 Переключить Псевдоэндотризин (Управление ПК)", null, (_, _) =>
                 Dispatcher.Invoke(() => MenuToggleControl_Click(this, new RoutedEventArgs())));
-            trayMenu.Items.Add("Открыть характер (personality.md)", null, (_, _) =>
+            trayMenu.Items.Add("📝 Открыть характер (personality.md)", null, (_, _) =>
                 Dispatcher.Invoke(() => MenuOpenPersonality_Click(this, new RoutedEventArgs())));
             trayMenu.Items.Add(new Forms.ToolStripSeparator());
-            trayMenu.Items.Add("Отключить биочип (Выход)", null, (_, _) =>
+            trayMenu.Items.Add("❌ Отключить биочип (Выход)", null, (_, _) =>
                 Dispatcher.Invoke(() => Application.Current.Shutdown()));
 
             _trayIcon.ContextMenuStrip = trayMenu;
-            _trayIcon.DoubleClick += (_, _) => Dispatcher.Invoke(ToggleOverlayVisibility);
+            _trayIcon.DoubleClick += (_, _) => Dispatcher.Invoke(OpenChatBox);
         }
 
         private void OnWindowSourceInitialized(object? sender, EventArgs e)
@@ -300,18 +358,39 @@ namespace JohnnyOverlay
             IntPtr handle = new WindowInteropHelper(this).Handle;
             HwndSource? source = HwndSource.FromHwnd(handle);
             source?.AddHook(WndProc);
+            // Глобальные хоткеи: Ctrl+Alt+H (скрыть/показать) и Alt+J (вызвать чат с Джонни)
             RegisterHotKey(handle, HOTKEY_ID_TOGGLE_HIDE, MOD_CONTROL | MOD_ALT, VK_H);
+            RegisterHotKey(handle, HOTKEY_ID_QUICK_CHAT, MOD_ALT, VK_J);
         }
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
             const int WM_HOTKEY = 0x0312;
-            if (msg == WM_HOTKEY && wParam.ToInt32() == HOTKEY_ID_TOGGLE_HIDE)
+            if (msg == WM_HOTKEY)
             {
-                ToggleOverlayVisibility();
-                handled = true;
+                int id = wParam.ToInt32();
+                if (id == HOTKEY_ID_TOGGLE_HIDE)
+                {
+                    ToggleOverlayVisibility();
+                    handled = true;
+                }
+                else if (id == HOTKEY_ID_QUICK_CHAT)
+                {
+                    OpenChatBox();
+                    handled = true;
+                }
             }
             return IntPtr.Zero;
+        }
+
+        private void OpenChatBox()
+        {
+            if (Visibility != Visibility.Visible)
+                Visibility = Visibility.Visible;
+
+            InputPanel.Visibility = Visibility.Visible;
+            Activate();
+            PromptTextBox.Focus();
         }
 
         private void ToggleOverlayVisibility()
@@ -324,7 +403,7 @@ namespace JohnnyOverlay
             {
                 Visibility = Visibility.Visible;
                 Activate();
-                TriggerRelicGlitch(10, "idle");
+                TriggerRelicGlitch(12, "idle");
             }
         }
 
@@ -332,7 +411,10 @@ namespace JohnnyOverlay
         {
             IntPtr handle = new WindowInteropHelper(this).Handle;
             if (handle != IntPtr.Zero)
+            {
                 UnregisterHotKey(handle, HOTKEY_ID_TOGGLE_HIDE);
+                UnregisterHotKey(handle, HOTKEY_ID_QUICK_CHAT);
+            }
 
             if (_trayIcon != null)
             {
@@ -348,7 +430,7 @@ namespace JohnnyOverlay
                 }
                 catch
                 {
-                    // Игнорируем при завершении
+                    // Игнорируем при закрытии
                 }
             }
         }
@@ -377,16 +459,31 @@ namespace JohnnyOverlay
             string title = GetActiveWindowTitle();
             if (title == "Рабочий стол Windows") return;
 
+            var workArea = SystemParameters.WorkArea;
             if (GetWindowRect(fg, out RECT rect))
             {
-                // Если окно не развёрнуто на весь экран, Джонни садится на правый край его верхней рамки
-                if (rect.Top > 80 && rect.Right > 300 && rect.Right < SystemParameters.VirtualScreenWidth)
+                double targetLeft;
+                double targetTop;
+
+                // Если окно не развёрнуто на весь экран — Джонни опирается на правый верхний угол окна
+                if (rect.Top > 120 && rect.Right > 350 && rect.Right < workArea.Right - 20)
                 {
-                    double targetLeft = rect.Right - Width - 30;
-                    double targetTop = rect.Top - 135; // Опирается на заголовок окна
-                    Left += (targetLeft - Left) * 0.25;
-                    Top += (targetTop - Top) * 0.25;
+                    targetLeft = rect.Right - Width - 20;
+                    targetTop = rect.Top - 110;
                 }
+                else
+                {
+                    // Если активное окно развёрнуто на весь экран — Джонни дежурит в правом нижнем углу экрана
+                    targetLeft = workArea.Right - Width - 20;
+                    targetTop = workArea.Bottom - Height - 8;
+                }
+
+                // Жёстко удерживаем Джонни в пределах видимой области экрана
+                targetLeft = Math.Clamp(targetLeft, workArea.Left + 8, workArea.Right - Width - 8);
+                targetTop = Math.Clamp(targetTop, workArea.Top + 8, workArea.Bottom - Height - 8);
+
+                Left += (targetLeft - Left) * 0.22;
+                Top += (targetTop - Top) * 0.22;
             }
         }
 
@@ -414,40 +511,49 @@ namespace JohnnyOverlay
                 _glitchTimer.Stop();
                 AvatarTranslate.X = 0;
                 AvatarTranslate.Y = 0;
+                GhostTranslate.X = -3;
+                GhostTranslate.Y = 0;
                 AvatarContainer.Opacity = 1.0;
                 RelicStatusBanner.Visibility = Visibility.Collapsed;
-                JohnnyDropShadow.Color = Color.FromRgb(0, 240, 255); // Чистый голубой цвет энграммы
+                JohnnyDropShadow.Color = Color.FromRgb(0, 240, 255);
                 SetSpriteState(_postGlitchSpriteState);
                 return;
             }
 
             _glitchTicksRemaining--;
-            // Эффект сбоя биочипа: резкие горизонтальные смещения и чередование голубого (#00F0FF) и жёлтого (#FCEE09)
-            AvatarTranslate.X = _rng.Next(-9, 10);
-            AvatarTranslate.Y = _rng.Next(-3, 4);
+            AvatarTranslate.X = _rng.Next(-10, 11);
+            AvatarTranslate.Y = _rng.Next(-4, 5);
+            GhostTranslate.X = _rng.Next(-18, 19);
+            GhostTranslate.Y = _rng.Next(-6, 7);
             AvatarContainer.Opacity = _rng.NextDouble() * 0.35 + 0.65;
             JohnnyDropShadow.Color = (_glitchTicksRemaining % 2 == 0)
                 ? Color.FromRgb(0, 240, 255)
                 : Color.FromRgb(252, 238, 9);
         }
 
+        private void Avatar_MouseEnter(object sender, MouseEventArgs e)
+        {
+            QuickActionBar.Opacity = 1.0;
+            JohnnyDropShadow.BlurRadius = 28;
+        }
+
+        private void Avatar_MouseLeave(object sender, MouseEventArgs e)
+        {
+            QuickActionBar.Opacity = 0.85;
+            JohnnyDropShadow.BlurRadius = 20;
+        }
+
         private void Avatar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
             if (e.ClickCount == 2)
             {
-                // Двойной клик по Джонни — открыть/скрыть поле ввода
-                InputPanel.Visibility = InputPanel.Visibility == Visibility.Visible
-                    ? Visibility.Collapsed
-                    : Visibility.Visible;
-                if (InputPanel.Visibility == Visibility.Visible)
-                    PromptTextBox.Focus();
+                OpenChatBox();
                 return;
             }
 
             _isDragging = true;
             SetSpriteState("drag");
 
-            // Зажатый Shift отключает авто-привязку к окнам и оставляет Джонни ровно там, куда его поставили
             if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
             {
                 _snapToActiveWindow = false;
@@ -461,8 +567,16 @@ namespace JohnnyOverlay
             finally
             {
                 _isDragging = false;
-                SetSpriteState("idle");
+                SetSpriteState(_isSpeaking ? "talk" : "idle");
             }
+        }
+
+        private void QuickChat_Click(object sender, RoutedEventArgs e)
+        {
+            if (InputPanel.Visibility == Visibility.Visible)
+                InputPanel.Visibility = Visibility.Collapsed;
+            else
+                OpenChatBox();
         }
 
         private async void PromptTextBox_KeyDown(object sender, KeyEventArgs e)
@@ -483,7 +597,7 @@ namespace JohnnyOverlay
         private async Task AskJohnnyAsync(string message, bool watchScreen = false)
         {
             SpeechBubble.Visibility = Visibility.Visible;
-            SpeechText.Text = "⚡ [СБОЙ БИОЧИПА... СИНХРОНИЗАЦИЯ ЭНГРАММЫ]";
+            SpeechText.Text = "⚡ [СИНХРОНИЗАЦИЯ НЕЙРОСЕТИ С БИОЧИПОМ RELIC...]";
             SetSpriteState("talk");
 
             var payload = new
@@ -532,14 +646,18 @@ namespace JohnnyOverlay
 
                 if (hasAudio && audioPath != null)
                 {
+                    _isSpeaking = true;
+                    VoiceEqPanel.Visibility = Visibility.Visible;
                     _player.Open(new Uri(audioPath, UriKind.Absolute));
                     _player.Play();
                 }
             }
             catch (Exception)
             {
+                _isSpeaking = false;
+                VoiceEqPanel.Visibility = Visibility.Collapsed;
                 TriggerRelicGlitch(12, "idle");
-                SpeechText.Text = "Ви, твой Python-сервер энграммы молчит. Запусти `python engram_server.py`, чумба!";
+                SpeechText.Text = "Ви, твой Python-сервер энграммы молчит. Перезапусти Start-Johnny.bat, чумба!";
             }
         }
 
@@ -550,7 +668,7 @@ namespace JohnnyOverlay
 
         private void MenuPlayGuitar_Click(object sender, RoutedEventArgs e)
         {
-            SetSpriteState("guitar");
+            TriggerRelicGlitch(10, "guitar");
             SpeechText.Text = "🎸 Врубай Samurai — Never Fade Away на полную катушку, чумба!";
         }
 
