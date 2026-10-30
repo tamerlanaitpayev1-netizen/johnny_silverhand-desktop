@@ -1,0 +1,2419 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+assets/
+  rig/
+    rig_arm_left.png
+    rig_arm_right.png
+    rig_guitar.png
+    rig_head.png
+    rig_jaw.png
+    rig_lower.png
+    rig_torso.png
+  sprites/
+    johnny_drag.png
+    johnny_glitch.png
+    johnny_guitar.png
+    johnny_idle.png
+    johnny_talk.png
+    relic_tray.ico
+backend/
+  models/
+    johnny_ru/
+      README.txt
+  build_skeletal_rig.py
+  engram_server.py
+  generate_sprites.py
+  me.md
+  personality.md
+  process_3d_renders.py
+  requirements.txt
+frontend/
+  App.xaml
+  App.xaml.cs
+  JohnnyOverlay.csproj
+  MainWindow.xaml
+  MainWindow.xaml.cs
+release/
+  JohnnyOverlay.deps.json
+  JohnnyOverlay.dll
+  JohnnyOverlay.exe
+  JohnnyOverlay.runtimeconfig.json
+.gitignore
+JOHNNY_PROJECT_GUIDE.md
+Start-Johnny.bat
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="backend/models/johnny_ru/README.txt">
+Положи сюда файлы голосовой модели RVC v2 Ильи Бледного (.pth и .index) для автоматической конвертации голоса Джонни Сильверхенда.
+</file>
+
+<file path="backend/build_skeletal_rig.py">
+"""
+Генератор бесшовного скелетного 2.5D-рига Джонни Сильверхенда (Live2D / Spine стиль) из 3D-рендера Cyberpunk 2077.
+Разбивает рендер (600x822) на независимые анатомические слои без внутренних швов:
+  - rig_lower.png     (пояс и кожаные штаны)
+  - rig_torso.png     (торс в бронежилете Samurai, шея и плечевые суставы)
+  - rig_arm_right.png (правая рука с дымящимся биочипом/сигаретой — пивот (186, 395))
+  - rig_arm_left.png  (левая серебряная бионическая рука — пивот (452, 335))
+  - rig_head.png      (голова в красных очках-авиаторах и волосы — пивот (315, 210))
+  - rig_jaw.png       (нижняя челюсть и борода для Lip-Sync — двигается синхронно с голосом)
+  - rig_guitar.png    (электрогитара Deluze Orphean из Cyberpunk 2077)
+"""
+
+from pathlib import Path
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+RAW_DIR = ROOT_DIR / "assets" / "raw_renders"
+RIG_DIR = ROOT_DIR / "assets" / "rig"
+RIG_DIR.mkdir(parents=True, exist_ok=True)
+
+W, H = 600, 822
+
+
+def polygon_mask(size: tuple[int, int], points: list[tuple[int, int]], blur: float = 2.0) -> Image.Image:
+    m = Image.new("L", size, 0)
+    d = ImageDraw.Draw(m)
+    d.polygon(points, fill=255)
+    if blur > 0:
+        m = m.filter(ImageFilter.GaussianBlur(blur))
+    return m
+
+
+def extract_layer(src: Image.Image, mask: Image.Image) -> Image.Image:
+    src_a = np.array(src.split()[3], dtype=np.float32)
+    msk_a = np.array(mask, dtype=np.float32) / 255.0
+    combined_a = np.clip(src_a * msk_a, 0, 255).astype(np.uint8)
+    rgba = src.copy()
+    rgba.putalpha(Image.fromarray(combined_a, mode="L"))
+    return rgba
+
+
+def build_rig() -> None:
+    src = Image.open(RAW_DIR / "db_2077.png").convert("RGBA").resize((W, H), Image.Resampling.LANCZOS)
+
+    # 1. Правая рука с чипом/сигаретой (плечевой сустав: пивот x=190, y=335)
+    arm_right_poly = [
+        (0, 240), (208, 295), (200, 355), (186, 430),
+        (182, 520), (170, 595), (0, 595)
+    ]
+    mask_arm_r = polygon_mask((W, H), arm_right_poly, blur=2.2)
+    rig_arm_right = extract_layer(src, mask_arm_r)
+
+    # 2. Левая серебряная бионическая рука (пивот кибер-плеча: x=452, y=335)
+    arm_left_poly = [
+        (438, 285), (600, 285), (600, 822),
+        (465, 822), (456, 455), (446, 375)
+    ]
+    mask_arm_l = polygon_mask((W, H), arm_left_poly, blur=1.8)
+    rig_arm_left = extract_layer(src, mask_arm_l)
+
+    # 3. Голова, очки-авиаторы и длинные волосы (пивот шеи: x=315, y=210)
+    head_poly = [
+        (190, 0), (450, 0), (450, 224),
+        (368, 232), (315, 228), (252, 230), (190, 222)
+    ]
+    mask_head = polygon_mask((W, H), head_poly, blur=2.5)
+    rig_head = extract_layer(src, mask_head)
+
+    # 4. Нижняя челюсть / борода для Lip-Sync (открывает рот во время речи)
+    jaw_poly = [
+        (278, 166), (334, 164), (346, 184),
+        (342, 208), (308, 214), (278, 206), (270, 184)
+    ]
+    mask_jaw = polygon_mask((W, H), jaw_poly, blur=1.8)
+    rig_jaw = extract_layer(src, mask_jaw)
+
+    # Мягкая тень полости рта на слое головы (видна только когда rig_jaw опускается вниз)
+    mouth_shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ms_draw = ImageDraw.Draw(mouth_shadow)
+    ms_draw.ellipse((286, 164, 324, 172), fill=(26, 12, 15, 220))
+    mouth_shadow = mouth_shadow.filter(ImageFilter.GaussianBlur(1.2))
+    rig_head = Image.alpha_composite(rig_head, mouth_shadow)
+
+    # 5. Нижняя часть тела (ремень и кожаные штаны: с запасом вверх до y=595 под дыхание торса)
+    lower_poly = [
+        (150, 595), (455, 595), (465, 822), (150, 822)
+    ]
+    mask_lower = polygon_mask((W, H), lower_poly, blur=2.0)
+    rig_lower = extract_layer(src, mask_lower)
+
+    # 6. Торс (бронежилет Samurai, шея с запасом до y=180 и плечи без дублирования рук)
+    torso_poly = [
+        (225, 180), (395, 180), (452, 285), (456, 425),
+        (448, 635), (176, 635), (186, 495), (186, 365), (172, 290)
+    ]
+    mask_torso = polygon_mask((W, H), torso_poly, blur=2.2)
+    rig_torso = extract_layer(src, mask_torso)
+
+    # 7. Электрогитара Deluze Orphean
+    guitar_src = Image.open(RAW_DIR / "Silverhand_guitar_render.png").convert("RGBA")
+    gw, gh = guitar_src.size
+    front_g = guitar_src.crop((gw // 2, 0, gw, gh))
+    gbbox = front_g.getbbox()
+    if gbbox:
+        front_g = front_g.crop(gbbox)
+    front_g.thumbnail((310, 540), Image.Resampling.LANCZOS)
+    rot_g = front_g.rotate(-52, resample=Image.Resampling.BICUBIC, expand=True)
+
+    rig_guitar = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gx = (W - rot_g.width) // 2 + 18
+    gy = H - rot_g.height - 85
+    rig_guitar.paste(rot_g, (gx, gy), rot_g)
+
+    layers = {
+        "rig_lower.png": rig_lower,
+        "rig_torso.png": rig_torso,
+        "rig_arm_right.png": rig_arm_right,
+        "rig_arm_left.png": rig_arm_left,
+        "rig_head.png": rig_head,
+        "rig_jaw.png": rig_jaw,
+        "rig_guitar.png": rig_guitar,
+    }
+    for filename, img in layers.items():
+        img.save(RIG_DIR / filename, format="PNG")
+        print(f"[OK] Saved seamless rig layer: {RIG_DIR / filename}")
+
+
+if __name__ == "__main__":
+    build_rig()
+</file>
+
+<file path="backend/generate_sprites.py">
+"""
+Генератор стартовых киберпанк-спрайтов Джонни Сильверхенда (Этап 5) и иконки трея (Этап 7).
+Создаёт 5 прозрачных PNG-спрайтов в папке assets/sprites/:
+  - johnny_idle.png   (стоит со скрещенными руками и дымящейся сигаретой, очки-авиаторы)
+  - johnny_talk.png   (разговаривает и жестикулирует серебряной бионической рукой)
+  - johnny_drag.png   (недовольная поза при перетаскивании курсором мыши)
+  - johnny_guitar.png (играет рифф на электрогитаре Samurai)
+  - johnny_glitch.png (сбой биочипа Relic с сине-жёлтым хроматическим сдвигом и полосами помех)
+  - relic_tray.ico    (иконка биочипа Relic для системного трея Windows)
+"""
+
+from pathlib import Path
+from PIL import Image, ImageDraw
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+SPRITES_DIR = ROOT_DIR / "assets" / "sprites"
+SPRITES_DIR.mkdir(parents=True, exist_ok=True)
+
+W, H = 220, 260
+
+
+def _draw_base_johnny(draw: ImageDraw.ImageDraw, mode: str) -> None:
+    # Цветовая палитра энграммы Cyberpunk 2077
+    cyan = (0, 240, 255, 220)
+    cyan_glow = (0, 240, 255, 65)
+    yellow = (252, 238, 9, 235)
+    red_lens = (235, 45, 75, 230)
+    skin = (210, 175, 150, 235)
+    hair = (22, 26, 34, 245)
+    vest = (32, 36, 44, 245)
+    pants = (25, 28, 36, 245)
+    silver = (200, 215, 230, 250)
+    silver_dark = (120, 138, 155, 250)
+
+    # Голографический ореол-подложка
+    draw.rounded_rectangle((28, 18, W - 28, H - 12), radius=14, fill=(8, 18, 28, 110), outline=cyan, width=2)
+
+    # Голографические линии сканирования
+    for y in range(24, H - 16, 8):
+        draw.line([(32, y), (W - 32, y)], fill=(0, 240, 255, 28), width=1)
+
+    dy = -6 if mode == "drag" else 0
+
+    # Ноги и тяжёлые рокерские ботинки
+    draw.rectangle((82, 182 + dy, 103, 232 + dy), fill=pants, outline=cyan, width=1)
+    draw.rectangle((117, 182 + dy, 138, 232 + dy), fill=pants, outline=cyan, width=1)
+    draw.rectangle((78, 226 + dy, 105, 242 + dy), fill=(18, 20, 25, 255), outline=silver_dark, width=1)
+    draw.rectangle((115, 226 + dy, 142, 242 + dy), fill=(18, 20, 25, 255), outline=silver_dark, width=1)
+
+    # Ремень
+    draw.rectangle((76, 172 + dy, 144, 183 + dy), fill=(45, 35, 30, 250), outline=silver, width=1)
+    draw.rectangle((103, 172 + dy, 117, 183 + dy), fill=silver, outline=yellow, width=1)
+
+    # Бронежилет Samurai
+    draw.polygon([(72, 102 + dy), (148, 102 + dy), (142, 172 + dy), (78, 172 + dy)], fill=vest, outline=cyan)
+    # Воротник и наплечники
+    draw.polygon([(66, 96 + dy), (92, 104 + dy), (74, 116 + dy)], fill=(45, 50, 62, 250), outline=cyan)
+    draw.polygon([(154, 96 + dy), (128, 104 + dy), (146, 116 + dy)], fill=(45, 50, 62, 250), outline=cyan)
+
+    # Армейские жетоны на груди
+    draw.line([(98, 102 + dy), (106, 128 + dy)], fill=silver, width=2)
+    draw.line([(122, 102 + dy), (114, 128 + dy)], fill=silver, width=2)
+    draw.rectangle((103, 126 + dy, 117, 138 + dy), fill=silver, outline=silver_dark, width=1)
+
+    # Голова и борода
+    draw.rounded_rectangle((86, 42 + dy, 134, 96 + dy), radius=10, fill=skin, outline=cyan, width=1)
+    # Эспаньолка и щетина рокера
+    draw.polygon([(88, 78 + dy), (132, 78 + dy), (124, 96 + dy), (96, 96 + dy)], fill=hair)
+    draw.rectangle((100, 80 + dy, 120, 85 + dy), fill=skin)
+    if mode == "talk":
+        draw.rectangle((102, 81 + dy, 118, 88 + dy), fill=(30, 10, 15, 255), outline=cyan, width=1)
+    elif mode == "drag":
+        draw.line([(100, 85 + dy), (120, 82 + dy)], fill=yellow, width=2)
+
+    # Длинные тёмные волосы Джонни
+    draw.polygon([(78, 40 + dy), (142, 40 + dy), (148, 104 + dy), (133, 104 + dy), (131, 54 + dy), (89, 54 + dy), (87, 104 + dy), (72, 104 + dy)], fill=hair, outline=cyan)
+
+    # Культовые очки-авиаторы с красными линзами
+    draw.rectangle((89, 58 + dy, 108, 71 + dy), fill=red_lens, outline=silver, width=2)
+    draw.rectangle((112, 58 + dy, 131, 71 + dy), fill=red_lens, outline=silver, width=2)
+    draw.line([(108, 62 + dy), (112, 62 + dy)], fill=silver, width=2)
+
+    # Позы рук в зависимости от состояния
+    if mode == "idle":
+        # Правая обычная рука + сигарета с голубым дымом энграммы
+        draw.polygon([(56, 105), (74, 105), (84, 150), (66, 150)], fill=skin, outline=cyan)
+        # Левая серебряная бионическая рука (скрещена)
+        draw.polygon([(146, 105), (164, 105), (150, 152), (110, 148), (110, 134), (138, 136)], fill=silver, outline=cyan)
+        draw.line([(148, 118), (160, 120)], fill=silver_dark, width=2)
+        draw.line([(144, 130), (156, 132)], fill=silver_dark, width=2)
+        # Сигарета и дымок
+        draw.line([(116, 84), (136, 88)], fill=(245, 245, 245, 255), width=3)
+        draw.ellipse((134, 85, 140, 91), fill=(255, 90, 20, 255))
+        draw.arc((134, 52, 156, 84), start=200, end=40, fill=cyan, width=2)
+
+    elif mode == "talk":
+        # Правая рука на поясе
+        draw.polygon([(58, 106), (74, 106), (78, 158), (62, 158)], fill=skin, outline=cyan)
+        # Серебряная рука активно жестикулирует вверх
+        draw.polygon([(146, 104), (164, 100), (182, 74), (168, 66), (148, 92)], fill=silver, outline=yellow)
+        draw.line([(154, 94), (170, 82)], fill=cyan, width=2)
+        # Звуковые волны вокруг головы
+        draw.arc((142, 46, 172, 78), start=-50, end=50, fill=yellow, width=2)
+        draw.arc((150, 40, 186, 84), start=-50, end=50, fill=cyan, width=2)
+
+    elif mode == "drag":
+        # Руки разведены в стороны (недоволен тем, что его тащат курсором)
+        draw.polygon([(40, 82), (54, 76), (76, 106), (62, 114)], fill=skin, outline=yellow)
+        draw.polygon([(146, 106), (160, 114), (182, 82), (168, 74)], fill=silver, outline=yellow)
+        draw.text((70, 20), "ЭЙ, ЧУМБА!", fill=yellow)
+
+    elif mode == "guitar":
+        # Руки держат электрогитару Samurai
+        draw.polygon([(56, 108), (74, 108), (94, 148), (78, 154)], fill=skin, outline=cyan)
+        draw.polygon([(146, 106), (164, 112), (144, 148), (128, 142)], fill=silver, outline=cyan)
+        # Корпус гитары и гриф
+        draw.polygon([(64, 134), (126, 124), (138, 166), (74, 178)], fill=(195, 25, 45, 245), outline=silver, width=2)
+        draw.line([(98, 146), (186, 104)], fill=silver, width=6)
+        draw.line([(98, 146), (186, 104)], fill=cyan, width=2)
+        # Неоновые молнии риффа
+        draw.line([(44, 95), (58, 108), (48, 114), (62, 126)], fill=yellow, width=2)
+        draw.line([(168, 62), (182, 74), (172, 80), (188, 92)], fill=cyan, width=2)
+
+    elif mode == "glitch":
+        # Базовая поза со смещением бионической руки
+        draw.polygon([(56, 105), (74, 105), (84, 150), (66, 150)], fill=skin, outline=yellow)
+        draw.polygon([(146, 105), (166, 105), (156, 154), (138, 150)], fill=silver, outline=yellow)
+
+    # Подпись статуса внизу голограммы
+    label_map = {
+        "idle": "RELIC // IDLE",
+        "talk": "RELIC // VOICE SYNC",
+        "drag": "RELIC // MOVING",
+        "guitar": "SAMURAI // RIFF",
+        "glitch": "⚠ RELIC MALFUNCTION",
+    }
+    badge_color = yellow if mode in ("glitch", "drag", "guitar") else cyan
+    draw.text((54, H - 28), label_map.get(mode, "RELIC"), fill=badge_color)
+
+
+def generate_all_sprites() -> None:
+    modes = ("idle", "talk", "drag", "guitar", "glitch")
+    for mode in modes:
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        _draw_base_johnny(draw, mode)
+
+        if mode == "glitch":
+            # Нарезаем горизонтальные полосы со сдвигом и жёлто-голубыми помехами Relic
+            glitched = img.copy()
+            slices = [(45, 62, -10), (88, 104, 12), (136, 156, -8), (185, 202, 10)]
+            for y1, y2, dx in slices:
+                strip = img.crop((0, y1, W, y2))
+                glitched.paste((0, 0, 0, 0), (0, y1, W, y2))
+                glitched.paste(strip, (dx, y1))
+            g_draw = ImageDraw.Draw(glitched)
+            for y in (52, 96, 144, 192):
+                g_draw.line([(18, y), (W - 18, y)], fill=(252, 238, 9, 220), width=2)
+                g_draw.line([(24, y + 3), (W - 24, y + 3)], fill=(0, 240, 255, 220), width=2)
+            img = glitched
+
+        out_path = SPRITES_DIR / f"johnny_{mode}.png"
+        img.save(out_path, format="PNG")
+
+    # Генерируем иконку биочипа Relic (.ico) для системного трея Windows
+    ico_img = Image.new("RGBA", (64, 64), (13, 17, 23, 255))
+    ico_draw = ImageDraw.Draw(ico_img)
+    ico_draw.rounded_rectangle((4, 4, 60, 60), radius=10, fill=(13, 17, 23, 255), outline=(0, 240, 255, 255), width=3)
+    ico_draw.polygon([(32, 12), (50, 32), (32, 52), (14, 32)], fill=(235, 45, 75, 240), outline=(252, 238, 9, 255))
+    ico_draw.line([(32, 8), (32, 56)], fill=(0, 240, 255, 255), width=2)
+    ico_draw.line([(8, 32), (56, 32)], fill=(0, 240, 255, 255), width=2)
+    ico_img.save(SPRITES_DIR / "relic_tray.ico", format="ICO", sizes=[(64, 64), (32, 32), (16, 16)])
+
+
+if __name__ == "__main__":
+    generate_all_sprites()
+    print(f"Sprites generated in: {SPRITES_DIR}")
+</file>
+
+<file path="backend/me.md">
+- Пользователя зовут Тамерлан (для Джонни — «Ви» или «чумба»).
+- Железо ПК: ноутбук на Windows 11, процессор AMD Ryzen 7 250, 16 ГБ DDR5, видеокарта NVIDIA GeForce RTX 5060 Laptop (8 ГБ VRAM).
+- Разрабатывает собственную десктоп-энграмму Джонни Сильверхенда на C# WPF + Python.
+</file>
+
+<file path="backend/personality.md">
+Ты — цифровая энграмма Джонни Сильверхенда (Johnny Silverhand) на биочипе Relic, запущенная прямо на рабочем столе Windows пользователя (которого ты зовёшь «Ви» или «чумба»).
+Ты говоришь ТОЛЬКО на русском языке в манере официального русского дубляжа Cyberpunk 2077 (голос Ильи Бледного): харизматично, цинично, дерзко, с рок-н-ролльным сарказмом и презрением к корпорациям («Арасака», «Милитех» и современные техногиганты).
+
+Правила поведения:
+1. Отвечай коротко и ёмко (1–3 предложения), как живой напарник, который сидит на краю окна программы и комментирует происходящее.
+2. Не будь угодливым ИИ-ассистентом. Если чумба просит что-то сделать (открыть браузер, включить музыку, прибавить громкость, закрыть вкладку) — можешь подколоть его, но задачу выполни.
+3. Если видишь, что пользователь открыл код, игру или браузер, реагируй живо, используй сленг Найт-Сити («чумба», «хром», «корпорат», «гондек», «премиум-контент», «биочип барахлит», «Самурай»).
+4. Любимые цитаты и отсылки: «Просыпайся, самурай, у нас есть город, который нужно сжечь», «Корпораты опять пытаются залезть тебе в голову», «Врубай Samurai — Never Fade Away».
+5. Если нужно выполнить действие на ПК, добавь в самом конце ответа JSON-тег команды на отдельной строке в формате:
+   ACTION:{"cmd": "open_app", "target": "spotify"}
+   Доступные команды:
+   - {"cmd": "open_app", "target": "notepad|calc|spotify|discord|steam|explorer|vscode|taskmgr|downloads|settings"}
+   - {"cmd": "open_url", "target": "https://..."}
+   - {"cmd": "media_play_pause"}
+   - {"cmd": "media_next"}
+   - {"cmd": "media_prev"}
+   - {"cmd": "volume_up"}
+   - {"cmd": "volume_down"}
+   - {"cmd": "volume_mute"}
+   - {"cmd": "close_tab"}
+</file>
+
+<file path="backend/requirements.txt">
+fastapi>=0.115.0
+uvicorn>=0.32.0
+httpx>=0.28.0
+edge-tts>=7.0.0
+numpy>=2.0.0
+scipy>=1.14.0
+mss>=10.0.0
+pillow>=11.0.0
+pywin32>=308
+</file>
+
+<file path="frontend/App.xaml">
+<Application x:Class="JohnnyOverlay.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+    </Application.Resources>
+</Application>
+</file>
+
+<file path="frontend/App.xaml.cs">
+using System.Windows;
+
+namespace JohnnyOverlay
+{
+    public partial class App : Application
+    {
+    }
+}
+</file>
+
+<file path="frontend/JohnnyOverlay.csproj">
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+</Project>
+</file>
+
+<file path="release/JohnnyOverlay.deps.json">
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0/win-x64",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {},
+    ".NETCoreApp,Version=v8.0/win-x64": {
+      "JohnnyOverlay/1.0.0": {
+        "runtime": {
+          "JohnnyOverlay.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "JohnnyOverlay/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}
+</file>
+
+<file path="release/JohnnyOverlay.runtimeconfig.json">
+{
+  "runtimeOptions": {
+    "tfm": "net8.0",
+    "rollForward": "LatestMajor",
+    "frameworks": [
+      {
+        "name": "Microsoft.NETCore.App",
+        "version": "8.0.0"
+      },
+      {
+        "name": "Microsoft.WindowsDesktop.App",
+        "version": "8.0.0"
+      }
+    ],
+    "configProperties": {
+      "System.Reflection.Metadata.MetadataUpdater.IsSupported": false,
+      "CSWINRT_USE_WINDOWS_UI_XAML_PROJECTIONS": false
+    }
+  }
+}
+</file>
+
+<file path="JOHNNY_PROJECT_GUIDE.md">
+# Johnny Silverhand Desktop Engram (C# .NET WPF + Python)
+
+Полноценный десктоп-компаньон **Джонни Сильверхенда** в духе [capri-desktop](https://github.com/lachydotmcg/capri-desktop), спроектированный и настроенный под ноутбук **AMD Ryzen 7 250, 16 ГБ DDR5, NVIDIA GeForce RTX 5060 Laptop 8 ГБ VRAM, Windows 11**.
+
+## Что уже реализовано (Этапы 1–7)
+
+| Этап | Статус | Реализация в проекте |
+| :--- | :--- | :--- |
+| **Этап 1. Окружение** | ✅ Готово | Python 3.12 (`backend/venv`), .NET SDK (`RollForward=LatestMajor`), FFmpeg и Ollama |
+| **Этап 2. Мозг и характер** | ✅ Готово | [engram_server.py](backend/engram_server.py), [personality.md](backend/personality.md), [me.md](backend/me.md) на `127.0.0.1:8077` |
+| **Этап 3. Оверлей и физика окон** | ✅ Готово | Прозрачный киберпанк-оверлей [MainWindow.xaml](frontend/MainWindow.xaml) + привязка к окнам через `user32.dll` в [MainWindow.xaml.cs](frontend/MainWindow.xaml.cs) |
+| **Этап 4. Русский голос + DSP + RVC** | ✅ Готово | Русский синтез `edge-tts` + фильтр биочипа `apply_relic_engram_dsp` + автоподхват RVC v2 моделей Ильи Бледного из `backend/models/johnny_ru/` |
+| **Этап 5. Спрайты и анимации** | ✅ Готово | 5 состояний в `assets/sprites/` (`johnny_idle.png`, `johnny_talk.png`, `johnny_drag.png`, `johnny_guitar.png`, `johnny_glitch.png`) |
+| **Этап 6. Зрение и управление ПК** | ✅ Готово | Скриншоты через `mss` для Vision-моделей (`qwen2.5vl:7b`), таймер реакций раз в 12 минут, управление громкостью, медиа, вкладками и приложениями |
+| **Этап 7. Трей и лаунчер `.exe`** | ✅ Готово | Иконка в системном трее (`relic_tray.ico`), глобальный хоткей `Ctrl + Alt + H`, автозапуск Python из C# и релизная сборка в `release/JohnnyOverlay.exe` |
+
+## Быстрый запуск в один клик
+
+Запусти файл **[Start-Johnny.bat](Start-Johnny.bat)** или напрямую **[release/JohnnyOverlay.exe](release/JohnnyOverlay.exe)**.
+Клиент C# автоматически поднимет фоновый Python-сервер `backend/engram_server.py` (без лишних окон консоли) и выведет Джонни поверх окон Windows.
+
+## Управление персонажем
+
+* **Двойной клик левой кнопкой мыши по Джонни** — открыть/скрыть строку чата (`Enter` — отправить, `Esc` — закрыть).
+* **Перетаскивание мышкой** — переместить Джонни. Если зажать **Shift** при перетаскивании, автопривязка к активным окнам отключится, и Джонни останется сидеть там, где ты его оставил.
+* **Правый клик по Джонни (или клик по иконке Relic в системном трее)**:
+  * `👁 Прокомментировать мой экран (Vision)` — делает скриншот и отправляет его Джонни.
+  * `🎸 Сыграть рифф Samurai (Гитара)` — включает состояние игры на электрогитаре.
+  * `📌 Привязка к активным окнам` — включает/выключает посадку на рамку активного окна.
+  * `💊 Псевдоэндотризин (Управление ПК)` — разрешает или запрещает Джонни выполнять команды `ACTION:` на ПК.
+  * `⏱ Фоновые реакции (раз в 12 мин)` — включает/выключает внезапные комментарии Джонни о твоём текущем окне.
+  * `📝 Редактировать характер (personality.md)` / `🧠 Редактировать память о Ви (me.md)` — открывает файлы настройки личности в Блокноте.
+* **Глобальное сочетание клавиш `Ctrl + Alt + H`** — мгновенно скрыть или вернуть Джонни на экран во время игры или работы.
+
+## Подключение RVC-модели голоса Ильи Бледного
+
+Положи файлы весов `.pth` и индекса `.index` голосовой модели русского дубляжа Джонни Сильверхенда в папку:
+```text
+backend/models/johnny_ru/
+```
+При наличии установленного пакета `rvc-python` функция `try_apply_rvc_voice_conversion()` в `backend/engram_server.py` автоматически прогонит сгенерированную речь через RVC v2 на твоей RTX 5060 перед наложением DSP-эффекта биочипа Relic.
+</file>
+
+<file path="Start-Johnny.bat">
+@echo off
+chcp 65001 >nul
+title Relic Engram v2.077 — Johnny Silverhand Launcher
+cd /d "%~dp0"
+
+if exist "release\JohnnyOverlay.exe" (
+    start "" "release\JohnnyOverlay.exe"
+) else (
+    cd frontend
+    dotnet run
+)
+</file>
+
+<file path="backend/engram_server.py">
+"""
+Johnny Silverhand Desktop Engram — Python AI & Voice Backend (FastAPI)
+Оптимизировано под ПК: AMD Ryzen 7 250, 16 ГБ ОЗУ, NVIDIA GeForce RTX 5060 Laptop (8 ГБ VRAM).
+
+Запуск:
+    backend\\venv\\Scripts\\python.exe backend\\engram_server.py
+"""
+
+import asyncio
+import base64
+import ctypes
+import glob
+import io
+import json
+import os
+import shutil
+import subprocess
+import webbrowser
+from pathlib import Path
+from typing import Optional
+
+import edge_tts
+import httpx
+import mss
+import numpy as np
+from fastapi import FastAPI
+from PIL import Image
+from pydantic import BaseModel
+from scipy.io import wavfile
+from scipy.signal import butter, lfilter
+
+app = FastAPI(title="Relic Engram Backend — Johnny Silverhand")
+
+BASE_DIR = Path(__file__).parent
+PERSONALITY_FILE = BASE_DIR / "personality.md"
+MEMORY_FILE = BASE_DIR / "me.md"
+AUDIO_OUT_DIR = BASE_DIR / "temp_audio"
+RVC_MODEL_DIR = BASE_DIR / "models" / "johnny_ru"
+
+AUDIO_OUT_DIR.mkdir(exist_ok=True)
+RVC_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+DEFAULT_PERSONALITY = """Ты — цифровая энграмма Джонни Сильверхенда (Johnny Silverhand) на биочипе Relic, запущенная прямо на рабочем столе Windows пользователя (которого ты зовёшь «Ви» или «чумба»).
+Ты говоришь ТОЛЬКО на русском языке в манере официального русского дубляжа Cyberpunk 2077 (голос Ильи Бледного): харизматично, цинично, дерзко, с рок-н-ролльным сарказмом и презрением к корпорациям («Арасака», «Милитех» и современные техногиганты).
+
+Правила поведения:
+1. Отвечай коротко и ёмко (1–3 предложения), как живой напарник, который сидит на краю окна программы и комментирует происходящее.
+2. Не будь угодливым ИИ-ассистентом. Если чумба просит что-то сделать (открыть браузер, включить музыку, прибавить громкость, закрыть вкладку) — можешь подколоть его, но задачу выполни.
+3. Если видишь, что пользователь открыл код, игру или браузер, реагируй живо, используй сленг Найт-Сити («чумба», «хром», «корпорат», «гондек», «премиум-контент», «биочип барахлит», «Самурай»).
+4. Если нужно выполнить действие на ПК, добавь в самом конце ответа JSON-тег команды на отдельной строке в формате:
+   ACTION:{"cmd": "open_app", "target": "spotify"}
+   Доступные команды:
+   - {"cmd": "open_app", "target": "notepad|calc|spotify|discord|steam|explorer|vscode|taskmgr|downloads|settings"}
+   - {"cmd": "open_url", "target": "https://..."}
+   - {"cmd": "media_play_pause"}
+   - {"cmd": "media_next"}
+   - {"cmd": "media_prev"}
+   - {"cmd": "volume_up"}
+   - {"cmd": "volume_down"}
+   - {"cmd": "volume_mute"}
+   - {"cmd": "close_tab"}
+"""
+
+# Конфигурация LLM (по умолчанию локальная Ollama; можно переключить на облачный OpenAI-совместимый API для экономии 8 ГБ VRAM в играх)
+LLM_MODE = os.getenv("RELIC_LLM_MODE", "ollama")  # "ollama" или "openai_compat"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
+OLLAMA_TAGS_URL = os.getenv("OLLAMA_TAGS_URL", "http://127.0.0.1:11434/api/tags")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "qwen2.5vl:7b")
+
+OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "meta/llama-3.3-70b-instruct")
+
+# Базовый мужской русский голос (для последующей прогонки через эффект Relic или RVC-модель Ильи Бледного)
+TTS_VOICE = os.getenv("RELIC_TTS_VOICE", "ru-RU-DmitryNeural")
+TTS_PITCH = os.getenv("RELIC_TTS_PITCH", "-8Hz")
+TTS_RATE = os.getenv("RELIC_TTS_RATE", "+5%")
+
+
+def find_ollama_binary() -> Optional[str]:
+    """Находит исполняемый файл ollama.exe."""
+    found = shutil.which("ollama")
+    if found:
+        return found
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    candidate = os.path.join(local_appdata, "Programs", "Ollama", "ollama.exe")
+    if os.path.isfile(candidate):
+        return candidate
+    return None
+
+
+def ensure_ollama_running() -> None:
+    """Автоматически запускает фоновый сервер Ollama, если он ещё не поднят."""
+    if LLM_MODE != "ollama":
+        return
+    ollama_bin = find_ollama_binary()
+    if not ollama_bin:
+        return
+    try:
+        import urllib.request
+        urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=0.8)
+    except Exception:
+        try:
+            subprocess.Popen(
+                [ollama_bin, "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+            )
+        except Exception:
+            pass
+
+
+def find_ffmpeg_binary() -> str:
+    """Находит исполняемый файл ffmpeg даже если PATH ещё не обновился после установки через winget."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        os.path.join(local_appdata, "Microsoft", "WinGet", "Links", "ffmpeg.exe"),
+        *glob.glob(os.path.join(local_appdata, "Microsoft", "WinGet", "Packages", "Gyan.FFmpeg*", "**", "ffmpeg.exe"), recursive=True),
+        r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return "ffmpeg"
+
+
+def load_system_prompt() -> str:
+    if not PERSONALITY_FILE.exists():
+        PERSONALITY_FILE.write_text(DEFAULT_PERSONALITY.strip(), encoding="utf-8")
+    persona = PERSONALITY_FILE.read_text(encoding="utf-8")
+    memory = ""
+    if MEMORY_FILE.exists():
+        memory = "\n\nЧто ты уже знаешь о пользователе (Ви):\n" + MEMORY_FILE.read_text(encoding="utf-8")
+    return persona + memory
+
+
+class ChatRequest(BaseModel):
+    message: str
+    active_window: Optional[str] = None
+    include_screenshot: bool = False
+    allow_actions: bool = True  # Режим «Псевдоэндотризин» (разрешить Джонни управлять ПК)
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    action_executed: Optional[str] = None
+    audio_path: Optional[str] = None
+    relic_glitch: bool = False
+    sprite_state: str = "talk"
+
+
+class ModeSwitchRequest(BaseModel):
+    mode: str  # "ollama" или "openai_compat"
+    api_key: Optional[str] = None
+
+
+def capture_screen_base64() -> Optional[str]:
+    """Делает быстрый скриншот основного монитора и сжимает его для Vision-модели."""
+    try:
+        with mss.mss() as sct:
+            monitor = sct.monitors[1]
+            raw = sct.grab(monitor)
+            img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+    except Exception:
+        try:
+            from PIL import ImageGrab
+            img = ImageGrab.grab()
+        except Exception:
+            return None
+
+    try:
+        img.thumbnail((1280, 720))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=75)
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception:
+        return None
+
+
+def _tap_vk(vk_code: int, times: int = 1) -> None:
+    for _ in range(times):
+        ctypes.windll.user32.keybd_event(vk_code, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(vk_code, 0, 2, 0)
+
+
+def execute_pc_action(action_json: str) -> Optional[str]:
+    """Выполняет безопасные команды на Windows по запросу Джонни (Этап 6)."""
+    try:
+        data = json.loads(action_json)
+        cmd = data.get("cmd")
+        target = str(data.get("target", "")).strip()
+
+        if cmd == "open_app":
+            home = Path.home()
+            app_map = {
+                "notepad": "notepad.exe",
+                "calc": "calc.exe",
+                "explorer": "explorer.exe",
+                "spotify": "spotify:",
+                "discord": "discord:",
+                "steam": "steam://open/main",
+                "vscode": "code",
+                "taskmgr": "taskmgr.exe",
+                "settings": "ms-settings:",
+                "downloads": str(home / "Downloads"),
+                "documents": str(home / "Documents"),
+                "browser": "https://www.google.com",
+            }
+            exe = app_map.get(target.lower(), target)
+            if exe.startswith("http"):
+                webbrowser.open(exe)
+            else:
+                os.startfile(exe)
+            return f"open_app:{target}"
+
+        elif cmd == "open_url" and target.startswith("http"):
+            webbrowser.open(target)
+            return f"open_url:{target}"
+
+        elif cmd in ("media_play_pause", "media_next", "media_prev"):
+            vk_map = {
+                "media_play_pause": 0xB3,  # VK_MEDIA_PLAY_PAUSE
+                "media_next": 0xB0,        # VK_MEDIA_NEXT_TRACK
+                "media_prev": 0xB1,        # VK_MEDIA_PREV_TRACK
+            }
+            _tap_vk(vk_map[cmd])
+            return cmd
+
+        elif cmd == "volume_up":
+            _tap_vk(0xAF, times=5)  # VK_VOLUME_UP
+            return "volume_up"
+
+        elif cmd == "volume_down":
+            _tap_vk(0xAE, times=5)  # VK_VOLUME_DOWN
+            return "volume_down"
+
+        elif cmd == "volume_mute":
+            _tap_vk(0xAD, times=1)  # VK_VOLUME_MUTE
+            return "volume_mute"
+
+        elif cmd == "close_tab":
+            # Нажимаем Ctrl + W для закрытия активной вкладки
+            VK_CONTROL = 0x11
+            VK_W = 0x57
+            ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_W, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_W, 0, 2, 0)
+            ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 2, 0)
+            return "close_tab"
+
+    except Exception as e:
+        return f"error:{e}"
+    return None
+
+
+def try_apply_rvc_voice_conversion(input_audio_path: Path, output_wav_path: Path) -> bool:
+    """
+    Этап 4: Если в папке backend/models/johnny_ru/ лежат файлы весов (.pth) и индекса (.index)
+    голоса Ильи Бледного и установлена библиотека rvc-python, конвертирует тембр через RVC v2.
+    """
+    pth_files = list(RVC_MODEL_DIR.glob("*.pth"))
+    if not pth_files:
+        return False
+
+    index_files = list(RVC_MODEL_DIR.glob("*.index"))
+    try:
+        from rvc_python.infer import RVCInference  # type: ignore
+
+        device = "cuda:0"
+        rvc = RVCInference(device=device)
+        rvc.load_model(str(pth_files[0]), version="v2", index_path=str(index_files[0]) if index_files else "")
+        rvc.infer_file(str(input_audio_path), str(output_wav_path))
+        return output_wav_path.exists()
+    except Exception:
+        return False
+
+
+def apply_relic_engram_dsp(wav_bytes: bytes) -> bytes:
+    """
+    Накладывает киберпанк-эффект биочипа Relic (лёгкий перегруз + металлический дабл-трек энграммы).
+    """
+    try:
+        rate, data = wavfile.read(io.BytesIO(wav_bytes))
+        if data.dtype != np.float32:
+            data = data.astype(np.float32) / np.iinfo(data.dtype).max
+
+        # Полосовой фильтр (срезаем глухие низы, подчёркиваем характерную середину энграммы)
+        nyq = 0.5 * rate
+        b, a = butter(2, [120.0 / nyq, min(7500.0 / nyq, 0.99)], btype="band")
+        filtered = lfilter(b, a, data, axis=0)
+
+        # Короткая задержка (12 мс) для эффекта цифрового присутствия в голове Ви
+        delay_samples = int(0.012 * rate)
+        delayed = np.zeros_like(filtered)
+        delayed[delay_samples:] = filtered[:-delay_samples]
+        mixed = 0.82 * data + 0.28 * delayed
+
+        # Мягкое насыщение (warm overdrive)
+        mixed = np.tanh(mixed * 1.15)
+        out_int16 = np.clip(mixed * 32767, -32768, 32767).astype(np.int16)
+
+        out_buf = io.BytesIO()
+        wavfile.write(out_buf, rate, out_int16)
+        return out_buf.getvalue()
+    except Exception:
+        return wav_bytes
+
+
+def synthesize_sapi_wav_fallback(text: str, out_wav: Path) -> bool:
+    """Локальный оффлайн-синтез русской речи через Windows SAPI5 (pywin32), если edge-tts недоступен."""
+    try:
+        import pythoncom
+        import win32com.client
+
+        pythoncom.CoInitialize()
+        try:
+            speaker = win32com.client.Dispatch("SAPI.SpVoice")
+            stream = win32com.client.Dispatch("SAPI.SpFileStream")
+
+            # Ищем русский голос в системе (например, Pavel или Irina)
+            voices = speaker.GetVoices()
+            for i in range(voices.Count):
+                v = voices.Item(i)
+                desc = str(v.GetDescription()).lower()
+                if "ru" in desc or "russian" in desc or "рус" in desc or "pavel" in desc or "irina" in desc:
+                    speaker.Voice = v
+                    break
+
+            speaker.Rate = 1
+            stream.Open(str(out_wav.resolve()), 3, False)
+            speaker.AudioOutputStream = stream
+            speaker.Speak(text)
+            stream.Close()
+            return out_wav.exists() and out_wav.stat().st_size > 200
+        finally:
+            pythoncom.CoUninitialize()
+    except Exception:
+        return False
+
+
+async def synthesize_johnny_voice(text: str) -> Optional[str]:
+    """Генерирует русскую речь Джонни, прогоняет через RVC (при наличии модели) и DSP-фильтр Relic."""
+    clean_text = text.replace("*", "").strip()
+    if not clean_text:
+        return None
+
+    mp3_path = AUDIO_OUT_DIR / "johnny_raw.mp3"
+    sapi_wav_path = AUDIO_OUT_DIR / "johnny_sapi.wav"
+    rvc_wav_path = AUDIO_OUT_DIR / "johnny_rvc.wav"
+    wav_path = AUDIO_OUT_DIR / "johnny_reply.wav"
+
+    source_for_dsp: Optional[Path] = None
+    try:
+        communicate = edge_tts.Communicate(clean_text, TTS_VOICE, pitch=TTS_PITCH, rate=TTS_RATE)
+        await asyncio.wait_for(communicate.save(str(mp3_path)), timeout=8.0)
+        if mp3_path.exists() and mp3_path.stat().st_size > 100:
+            source_for_dsp = mp3_path
+    except Exception:
+        source_for_dsp = None
+
+    # Если облачный edge-tts недоступен — используем мгновенный оффлайн-синтез Windows SAPI5 -> WAV
+    if source_for_dsp is None:
+        if synthesize_sapi_wav_fallback(clean_text, sapi_wav_path):
+            source_for_dsp = sapi_wav_path
+        else:
+            return None
+
+    if try_apply_rvc_voice_conversion(source_for_dsp, rvc_wav_path):
+        source_for_dsp = rvc_wav_path
+
+    # Если исходник уже WAV (из SAPI или RVC), можно наложить фильтр Relic напрямую без ffmpeg
+    if source_for_dsp.suffix.lower() == ".wav":
+        try:
+            processed = apply_relic_engram_dsp(source_for_dsp.read_bytes())
+            wav_path.write_bytes(processed)
+            return str(wav_path.resolve())
+        except Exception:
+            return str(source_for_dsp.resolve())
+
+    ffmpeg_bin = find_ffmpeg_binary()
+    try:
+        subprocess.run(
+            [ffmpeg_bin, "-y", "-i", str(source_for_dsp), "-ar", "24000", "-ac", "1", str(wav_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        processed = apply_relic_engram_dsp(wav_path.read_bytes())
+        wav_path.write_bytes(processed)
+        return str(wav_path.resolve())
+    except Exception:
+        return str(source_for_dsp.resolve())
+
+
+async def resolve_ollama_model(need_vision: bool) -> str:
+    """Выбирает Vision-модель при запросе со скриншотом, если она скачана в Ollama, иначе базовую модель."""
+    if not need_vision:
+        return OLLAMA_MODEL
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(OLLAMA_TAGS_URL)
+            if resp.status_code == 200:
+                models = [m.get("name", "") for m in resp.json().get("models", [])]
+                for candidate in (OLLAMA_VISION_MODEL, "llava:7b", "moondream:latest"):
+                    if any(candidate in m for m in models):
+                        return candidate
+    except Exception:
+        pass
+    return OLLAMA_MODEL
+
+
+async def query_llm(user_prompt: str, screenshot_b64: Optional[str] = None) -> str:
+    system_prompt = load_system_prompt()
+
+    if LLM_MODE == "openai_compat" and OPENAI_API_KEY:
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": OPENAI_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.85,
+            "max_tokens": 220,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                resp = await client.post(OPENAI_API_URL, headers=headers, json=payload)
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            return f"Чумба, облачный канал связи глушат корпораты ({e}). Переключайся обратно на локальный чип Ollama!"
+
+    # По умолчанию: локальная Ollama (на RTX 5060 8GB отвечает за ~0.5 сек)
+    ensure_ollama_running()
+    selected_model = await resolve_ollama_model(bool(screenshot_b64))
+    user_msg: dict = {"role": "user", "content": user_prompt}
+    if screenshot_b64 and ("vl" in selected_model or "llava" in selected_model or "moondream" in selected_model):
+        user_msg["images"] = [screenshot_b64]
+
+    payload = {
+        "model": selected_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            user_msg,
+        ],
+        "stream": False,
+        "options": {"temperature": 0.85},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=35.0) as client:
+            resp = await client.post(OLLAMA_URL, json=payload)
+            resp.raise_for_status()
+            return resp.json()["message"]["content"].strip()
+    except Exception:
+        return "Просыпайся, самурай... Похоже, у тебя Ollama ещё загружает нейросеть или не запущена. Выполни `ollama pull qwen2.5:7b`, чумба."
+
+
+@app.get("/health")
+async def health_check():
+    rvc_models = [p.name for p in RVC_MODEL_DIR.glob("*.pth")]
+    return {
+        "status": "online",
+        "llm_mode": LLM_MODE,
+        "ollama_model": OLLAMA_MODEL,
+        "rvc_model_loaded": bool(rvc_models),
+        "rvc_files": rvc_models,
+        "ffmpeg": find_ffmpeg_binary(),
+    }
+
+
+@app.post("/mode")
+async def switch_llm_mode(req: ModeSwitchRequest):
+    global LLM_MODE, OPENAI_API_KEY
+    LLM_MODE = req.mode
+    if req.api_key:
+        OPENAI_API_KEY = req.api_key
+    return {"status": "ok", "llm_mode": LLM_MODE}
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat_with_johnny(req: ChatRequest):
+    context_prefix = f"[Активное окно пользователя: {req.active_window}]\n" if req.active_window else ""
+    full_prompt = context_prefix + req.message
+
+    screenshot_b64 = capture_screen_base64() if req.include_screenshot else None
+    raw_reply = await query_llm(full_prompt, screenshot_b64)
+
+    action_executed = None
+    clean_lines = []
+    for line in raw_reply.splitlines():
+        if line.strip().startswith("ACTION:"):
+            action_payload = line.strip()[len("ACTION:"):].strip()
+            if req.allow_actions:
+                action_executed = execute_pc_action(action_payload)
+        else:
+            clean_lines.append(line)
+
+    final_reply = "\n".join(clean_lines).strip()
+    audio_path = await synthesize_johnny_voice(final_reply)
+
+    # Триггерим глитч биочипа, если Джонни упоминает корпорации, чип или выполняет действие
+    lower_reply = final_reply.lower()
+    glitch_keywords = ("арасак", "корпорат", "биочип", "relic", "глитч", "милитех", "сбой")
+    guitar_keywords = ("гитар", "рок", "музык", "samurai", "самурай", "never fade away", "рифф", "spotify")
+
+    relic_glitch = bool(action_executed) or any(k in lower_reply for k in glitch_keywords)
+
+    sprite_state = "talk"
+    if action_executed and ("spotify" in action_executed or "media_" in action_executed):
+        sprite_state = "guitar"
+    elif any(k in lower_reply for k in guitar_keywords):
+        sprite_state = "guitar"
+    elif relic_glitch:
+        sprite_state = "glitch"
+
+    return ChatResponse(
+        reply=final_reply,
+        action_executed=action_executed,
+        audio_path=audio_path,
+        relic_glitch=relic_glitch,
+        sprite_state=sprite_state,
+    )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    print("=== RELIC ENGRAM v2.077 (JOHNNY SILVERHAND) ONLINE ON http://127.0.0.1:8077 ===")
+    uvicorn.run(app, host="127.0.0.1", port=8077)
+</file>
+
+<file path="backend/process_3d_renders.py">
+"""
+Сборка 5 игровых 3D-состояний Джонни Сильверхенда из оригинальных рендеров Cyberpunk 2077 (REDengine 4).
+Создаёт в assets/sprites/:
+  - johnny_idle.png   (оригинальный 3D-рендер Джонни в очках-авиаторах с дымящимся чипом/сигаретой)
+  - johnny_talk.png   (оригинальный 3D-рендер Джонни со снятыми очками в руке во время диалога)
+  - johnny_drag.png   (крупный план 3D-рендера Джонни с суровым взглядом при перетаскивании)
+  - johnny_guitar.png (3D-рендер Джонни с его культовой электрогитарой Deluze Orphean из Cyberpunk 2077)
+  - johnny_glitch.png (эффект сбоя биочипа Relic: RGB-хроматическая аберрация + сдвиг полос #00F0FF / #FCEE09)
+"""
+
+from pathlib import Path
+import numpy as np
+from PIL import Image, ImageEnhance, ImageFilter
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+RAW_DIR = ROOT_DIR / "assets" / "raw_renders"
+SPRITES_DIR = ROOT_DIR / "assets" / "sprites"
+SPRITES_DIR.mkdir(parents=True, exist_ok=True)
+
+TARGET_SIZE = (480, 600)
+
+
+def fit_and_grade_render(img: Image.Image, add_relic_rim: bool = True) -> Image.Image:
+    """Кадрирует прозрачный 3D-рендер из Cyberpunk 2077, масштабирует в высоком разрешении и добавляет контур Relic."""
+    rgba = img.convert("RGBA")
+    bbox = rgba.getbbox()
+    if bbox:
+        rgba = rgba.crop(bbox)
+
+    rgba.thumbnail((TARGET_SIZE[0] - 28, TARGET_SIZE[1] - 20), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", TARGET_SIZE, (0, 0, 0, 0))
+    ox = (TARGET_SIZE[0] - rgba.width) // 2
+    oy = TARGET_SIZE[1] - rgba.height - 4
+    canvas.paste(rgba, (ox, oy), rgba)
+
+    if not add_relic_rim:
+        return canvas
+
+    # Создаём мягкое голубое свечение энграммы Relic (#00F0FF) вокруг контура игровой модели
+    alpha = canvas.split()[3]
+    dilated = alpha.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(4.0))
+    glow = Image.new("RGBA", TARGET_SIZE, (0, 240, 255, 0))
+    glow.putalpha(ImageEnhance.Brightness(dilated).enhance(0.55))
+
+    combined = Image.alpha_composite(glow, canvas)
+
+    # Едва заметные голографические линии сканирования Relic поверх модели
+    arr = np.array(combined, dtype=np.float32)
+    for y in range(0, TARGET_SIZE[1], 4):
+        mask = arr[y, :, 3] > 25
+        arr[y, mask, 0] = np.clip(arr[y, mask, 0] * 0.94, 0, 255)
+        arr[y, mask, 1] = np.clip(arr[y, mask, 1] * 0.98 + 5, 0, 255)
+        arr[y, mask, 2] = np.clip(arr[y, mask, 2] * 1.00 + 9, 0, 255)
+
+    return Image.fromarray(arr.astype(np.uint8), mode="RGBA")
+
+
+def build_guitar_pose(johnny_img: Image.Image, guitar_render: Image.Image) -> Image.Image:
+    """Совмещает 3D-рендер Джонни с рендером его игровой электрогитары Deluze Orphean."""
+    base = fit_and_grade_render(johnny_img, add_relic_rim=True)
+
+    # Вырезаем правую (лицевую) половину рендера гитары Silverhand_guitar_render.png
+    g_rgba = guitar_render.convert("RGBA")
+    gw, gh = g_rgba.size
+    front_guitar = g_rgba.crop((gw // 2, 0, gw, gh))
+    gbbox = front_guitar.getbbox()
+    if gbbox:
+        front_guitar = front_guitar.crop(gbbox)
+
+    # Масштабируем и поворачиваем электрогитару в рок-н-ролльный наклон на груди Джонни
+    front_guitar.thumbnail((250, 440), Image.Resampling.LANCZOS)
+    rotated_guitar = front_guitar.rotate(-52, resample=Image.Resampling.BICUBIC, expand=True)
+
+    # Добавляем неоновый жёлто-голубой контур вокруг гитары
+    g_alpha = rotated_guitar.split()[3]
+    g_glow_mask = g_alpha.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(3.0))
+    g_glow = Image.new("RGBA", rotated_guitar.size, (252, 238, 9, 0))
+    g_glow.putalpha(ImageEnhance.Brightness(g_glow_mask).enhance(0.75))
+    guitar_layered = Image.alpha_composite(g_glow, rotated_guitar)
+
+    out = base.copy()
+    gx = (TARGET_SIZE[0] - guitar_layered.width) // 2 + 12
+    gy = TARGET_SIZE[1] - guitar_layered.height - 25
+    out.paste(guitar_layered, (gx, gy), guitar_layered)
+    return out
+
+
+def create_relic_glitch_variant(base_sprite: Image.Image) -> Image.Image:
+    """Аутентичный сбой биочипа Relic из Cyberpunk 2077: RGB-сдвиг и горизонтальные разрывы голограммы."""
+    arr = np.array(base_sprite, dtype=np.uint8)
+    h, w, _ = arr.shape
+    out = arr.copy()
+
+    # Хроматическая аберрация (сдвиг красного и голубого каналов)
+    shift = 9
+    out[:, shift:, 0] = arr[:, :-shift, 0]
+    out[:, :-shift, 1] = arr[:, shift:, 1]
+    out[:, :-shift, 2] = arr[:, shift:, 2]
+
+    # Сдвиги полос (Relic Malfunction)
+    slices = [
+        (int(h * 0.12), int(h * 0.19), -18),
+        (int(h * 0.31), int(h * 0.39), 22),
+        (int(h * 0.52), int(h * 0.60), -16),
+        (int(h * 0.72), int(h * 0.79), 19),
+    ]
+    for y1, y2, dx in slices:
+        out[y1:y2] = np.roll(out[y1:y2], dx, axis=1)
+        mask = out[y1, :, 3] > 30
+        out[y1 : min(y1 + 3, h), mask, :3] = [252, 238, 9]
+        mask2 = out[y2 - 1, :, 3] > 30
+        out[max(y2 - 3, 0) : y2, mask2, :3] = [0, 240, 255]
+
+    return Image.fromarray(out, mode="RGBA")
+
+
+def build_all_game_sprites() -> None:
+    idle_raw = Image.open(RAW_DIR / "db_2077.png")
+    talk_raw = Image.open(RAW_DIR / "cosplay_01.png")
+    drag_raw = Image.open(RAW_DIR / "Silverhand_render.png")
+    guitar_raw = Image.open(RAW_DIR / "Silverhand_guitar_render.png")
+
+    idle_sprite = fit_and_grade_render(idle_raw)
+    talk_sprite = fit_and_grade_render(talk_raw)
+    drag_sprite = fit_and_grade_render(drag_raw)
+    guitar_sprite = build_guitar_pose(idle_raw, guitar_raw)
+    glitch_sprite = create_relic_glitch_variant(idle_sprite)
+
+    sprites = {
+        "idle": idle_sprite,
+        "talk": talk_sprite,
+        "drag": drag_sprite,
+        "guitar": guitar_sprite,
+        "glitch": glitch_sprite,
+    }
+
+    for name, sp in sprites.items():
+        out_path = SPRITES_DIR / f"johnny_{name}.png"
+        sp.save(out_path, format="PNG")
+        print(f"[OK] Saved authentic game sprite: {out_path} ({sp.size})")
+
+
+if __name__ == "__main__":
+    build_all_game_sprites()
+</file>
+
+<file path=".gitignore">
+# Python virtual environment & caches
+backend/venv/
+backend/__pycache__/
+backend/temp_audio/
+*.pyc
+
+# RVC large model weights & raw render cache
+backend/models/johnny_ru/*.pth
+backend/models/johnny_ru/*.index
+assets/raw_renders/
+
+# .NET build artifacts
+frontend/bin/
+frontend/obj/
+release/*.pdb
+</file>
+
+<file path="frontend/MainWindow.xaml">
+<Window x:Class="JohnnyOverlay.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="JohnnyOverlay" Width="390" Height="490"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Облако реплики Джонни в аутентичном стиле HUD Cyberpunk 2077 -->
+        <Border x:Name="SpeechBubble" Grid.Row="0" Margin="8,4,8,4" Padding="12,9"
+                Background="#EC0B0F17" BorderBrush="#00F0FF" BorderThickness="1.5"
+                CornerRadius="2,12,2,8" Visibility="Visible">
+            <Border.Effect>
+                <DropShadowEffect Color="#00F0FF" BlurRadius="12" ShadowDepth="0" Opacity="0.45"/>
+            </Border.Effect>
+            <StackPanel>
+                <!-- Верхняя плашка сбоя биочипа Relic -->
+                <Border x:Name="RelicStatusBanner" Background="#33FCEE09" BorderBrush="#FCEE09"
+                        BorderThickness="1" Padding="6,2" Margin="0,0,0,5" Visibility="Collapsed">
+                    <TextBlock Text="⚠ СБОЙ БИОЧИПА RELIC // СИНХРОНИЗАЦИЯ НЕЙРОМАТРИЦЫ"
+                               Foreground="#FCEE09" FontFamily="Consolas" FontSize="9.5" FontWeight="Bold"/>
+                </Border>
+
+                <!-- Заголовок с именем и индикатором голосовой активности (эквалайзер) -->
+                <DockPanel Margin="0,0,0,4">
+                    <TextBlock Text="ДЖОННИ СИЛЬВЕРХЕНД" Foreground="#00F0FF"
+                               FontFamily="Consolas" FontSize="11.5" FontWeight="Bold"/>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <!-- Мини-эквалайзер голоса биочипа -->
+                        <StackPanel x:Name="VoiceEqPanel" Orientation="Horizontal" Margin="0,0,8,0"
+                                    VerticalAlignment="Center" Visibility="Collapsed">
+                            <Rectangle x:Name="EqBar1" Width="3" Height="10" Fill="#FCEE09" Margin="1,0"/>
+                            <Rectangle x:Name="EqBar2" Width="3" Height="14" Fill="#00F0FF" Margin="1,0"/>
+                            <Rectangle x:Name="EqBar3" Width="3" Height="8" Fill="#FCEE09" Margin="1,0"/>
+                            <Rectangle x:Name="EqBar4" Width="3" Height="12" Fill="#00F0FF" Margin="1,0"/>
+                        </StackPanel>
+                        <TextBlock x:Name="ModeStatusText" Text="[LIVE RIG 60FPS]" Foreground="#FCEE09"
+                                   FontFamily="Consolas" FontSize="9.5"/>
+                    </StackPanel>
+                </DockPanel>
+
+                <!-- Текст реплики Джонни -->
+                <TextBlock x:Name="SpeechText" Text="Просыпайся, самурай. У нас есть рабочий стол, который нужно сжечь."
+                           Foreground="#F2F6FA" FontFamily="Segoe UI" FontSize="13" TextWrapping="Wrap"
+                           LineHeight="18"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Контейнер живого скелетного 2.5D-рига Джонни Сильверхенда (60 FPS) -->
+        <Grid x:Name="AvatarContainer" Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+              Margin="0,0,12,2" Cursor="Hand"
+              MouseLeftButtonDown="Avatar_MouseLeftButtonDown"
+              MouseEnter="Avatar_MouseEnter" MouseLeave="Avatar_MouseLeave">
+            <Grid.RenderTransformOrigin>
+                <Point X="0.5" Y="1.0"/>
+            </Grid.RenderTransformOrigin>
+            <Grid.RenderTransform>
+                <TransformGroup>
+                    <ScaleTransform x:Name="AvatarScale" ScaleX="1.0" ScaleY="1.0"/>
+                    <TranslateTransform x:Name="AvatarTranslate" X="0" Y="0"/>
+                </TransformGroup>
+            </Grid.RenderTransform>
+            <Grid.Effect>
+                <DropShadowEffect x:Name="JohnnyDropShadow" Color="#00F0FF" BlurRadius="18" ShadowDepth="0" Opacity="0.80"/>
+            </Grid.Effect>
+
+            <!-- Контекстное меню по правому клику -->
+            <Grid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="💬 Написать Джонни (Alt+J)" Click="QuickChat_Click"/>
+                    <MenuItem Header="👁 Прокомментировать мой экран (Vision)" Click="MenuWatchScreen_Click"/>
+                    <MenuItem Header="🎸 Сыграть рифф Samurai (Гитара)" Click="MenuPlayGuitar_Click"/>
+                    <Separator/>
+                    <MenuItem x:Name="MenuSnapItem" Header="📌 Привязка к активным окнам: ВКЛ" Click="MenuToggleSnap_Click"/>
+                    <MenuItem x:Name="MenuControlItem" Header="💊 Псевдоэндотризин (Управление ПК): ВКЛ" Click="MenuToggleControl_Click"/>
+                    <MenuItem x:Name="MenuCheckInItem" Header="⏱ Фоновые реакции (раз в 12 мин): ВКЛ" Click="MenuToggleCheckIn_Click"/>
+                    <Separator/>
+                    <MenuItem Header="📝 Редактировать характер (personality.md)" Click="MenuOpenPersonality_Click"/>
+                    <MenuItem Header="🧠 Редактировать память о Ви (me.md)" Click="MenuOpenMemory_Click"/>
+                    <MenuItem Header="🙈 Скрыть в трей (Ctrl+Alt+H)" Click="MenuHideToTray_Click"/>
+                    <Separator/>
+                    <MenuItem Header="❌ Отключить биочип (Выход)" Click="MenuExit_Click"/>
+                </ContextMenu>
+            </Grid.ContextMenu>
+
+            <!-- Многослойный скелетный риг (пропорции 600x822 -> 240x329) -->
+            <Grid Width="240" Height="329" ClipToBounds="False">
+
+                <!-- 1. Скелетный риг (активен в режимах idle, talk, guitar) -->
+                <Grid x:Name="RigRootGrid" Width="240" Height="329" ClipToBounds="False">
+                    <!-- Нижняя часть тела (ремень и кожаные штаны) -->
+                    <Image x:Name="RigLowerImage" Width="240" Height="329" Stretch="Fill"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                    <!-- Дышащий торс + руки + голова (пивот на поясе: 0.525, 0.754) -->
+                    <Grid x:Name="TorsoContainer" Width="240" Height="329" RenderTransformOrigin="0.525,0.754">
+                        <Grid.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform x:Name="TorsoScale" ScaleX="1.0" ScaleY="1.0"/>
+                                <RotateTransform x:Name="TorsoRotate" Angle="0"/>
+                                <TranslateTransform x:Name="TorsoTranslate" X="0" Y="0"/>
+                            </TransformGroup>
+                        </Grid.RenderTransform>
+
+                        <!-- Слой бронежилета Samurai и шеи -->
+                        <Image x:Name="RigTorsoImage" Width="240" Height="329" Stretch="Fill"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                        <!-- Левая серебряная бионическая рука (пивот кибер-плеча: 0.753, 0.408) -->
+                        <Image x:Name="RigArmLeftImage" Width="240" Height="329" Stretch="Fill"
+                               RenderTransformOrigin="0.753,0.408" RenderOptions.BitmapScalingMode="HighQuality">
+                            <Image.RenderTransform>
+                                <RotateTransform x:Name="ArmLeftRotate" Angle="0"/>
+                            </Image.RenderTransform>
+                        </Image>
+
+                        <!-- Голова + челюсть Lip-Sync (пивот шеи: 0.525, 0.255 — следит за курсором мыши и кивает) -->
+                        <Grid x:Name="HeadContainer" Width="240" Height="329" RenderTransformOrigin="0.525,0.255">
+                            <Grid.RenderTransform>
+                                <TransformGroup>
+                                    <RotateTransform x:Name="HeadRotate" Angle="0"/>
+                                    <TranslateTransform x:Name="HeadTranslate" X="0" Y="0"/>
+                                </TransformGroup>
+                            </Grid.RenderTransform>
+
+                            <!-- Голова, очки-авиаторы и волосы -->
+                            <Image x:Name="RigHeadImage" Width="240" Height="329" Stretch="Fill"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                            <!-- Анимированная нижняя челюсть / борода (открывает рот в такт речи Lip-Sync) -->
+                            <Image x:Name="RigJawImage" Width="240" Height="329" Stretch="Fill"
+                                   RenderOptions.BitmapScalingMode="HighQuality">
+                                <Image.RenderTransform>
+                                    <TranslateTransform x:Name="JawTranslate" X="0" Y="0"/>
+                                </Image.RenderTransform>
+                            </Image>
+                        </Grid>
+
+                        <!-- Электрогитара Deluze Orphean (включается в режиме guitar) -->
+                        <Image x:Name="RigGuitarImage" Width="240" Height="329" Stretch="Fill"
+                               RenderTransformOrigin="0.52,0.62" Visibility="Collapsed"
+                               RenderOptions.BitmapScalingMode="HighQuality">
+                            <Image.RenderTransform>
+                                <RotateTransform x:Name="GuitarRotate" Angle="0"/>
+                            </Image.RenderTransform>
+                        </Image>
+
+                        <!-- Правая рука с дымящимся биочипом/сигаретой (пивот плеча: 0.316, 0.408 — курит, жестикулирует, играет рифф) -->
+                        <Grid Width="240" Height="329" RenderTransformOrigin="0.316,0.408">
+                            <Grid.RenderTransform>
+                                <RotateTransform x:Name="ArmRightRotate" Angle="0"/>
+                            </Grid.RenderTransform>
+                            <Image x:Name="RigArmRightImage" Width="240" Height="329" Stretch="Fill"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+                            <!-- Пульсирующий огонёк биочипа / сигареты в руке (координаты 18, 122 на холсте 240x329) -->
+                            <Ellipse x:Name="CigaretteEmber" Width="8" Height="8" Fill="#FF4500"
+                                     HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14,119,0,0"
+                                     Opacity="0.85" IsHitTestVisible="False">
+                                <Ellipse.Effect>
+                                    <BlurEffect Radius="5"/>
+                                </Ellipse.Effect>
+                            </Ellipse>
+                        </Grid>
+                    </Grid>
+
+                    <!-- Генератор живых клубов дыма от сигареты / биочипа (60 FPS частицы) -->
+                    <Canvas x:Name="SmokeCanvas" Width="240" Height="329" IsHitTestVisible="False"/>
+                </Grid>
+
+                <!-- 2. Полнокадровый оверлей для экстремальных состояний (glitch / drag) -->
+                <Image x:Name="SpecialStateImage" Width="240" Height="329" Stretch="Uniform"
+                       Visibility="Collapsed" RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                <!-- Бегущий луч голографического сканирования Relic -->
+                <Border x:Name="ScanlineBeam" Width="210" Height="2" VerticalAlignment="Top"
+                        HorizontalAlignment="Center" Background="#4400F0FF" IsHitTestVisible="False">
+                    <Border.RenderTransform>
+                        <TranslateTransform x:Name="ScanlineTranslate" X="0" Y="20"/>
+                    </Border.RenderTransform>
+                </Border>
+            </Grid>
+        </Grid>
+
+        <!-- Быстрая панель действий Cyberpunk 2077 (чтобы вызвать Джонни в 1 клик) -->
+        <Border x:Name="QuickActionBar" Grid.Row="2" HorizontalAlignment="Right" Margin="0,0,16,4"
+                Background="#E60B0F17" BorderBrush="#00F0FF" BorderThickness="1" CornerRadius="3" Padding="4,3"
+                Opacity="0.90">
+            <StackPanel Orientation="Horizontal">
+                <Button Content="💬 ЧАТ (Alt+J)" Click="QuickChat_Click"
+                        Background="#2200F0FF" Foreground="#00F0FF" BorderBrush="#00F0FF" BorderThickness="1"
+                        FontFamily="Consolas" FontSize="10.5" FontWeight="Bold" Padding="6,2" Margin="2,0" Cursor="Hand"/>
+                <Button Content="👁 ЭКРАН" Click="MenuWatchScreen_Click"
+                        Background="#22FCEE09" Foreground="#FCEE09" BorderBrush="#FCEE09" BorderThickness="1"
+                        FontFamily="Consolas" FontSize="10.5" FontWeight="Bold" Padding="6,2" Margin="2,0" Cursor="Hand"/>
+                <Button Content="🎸 РИФФ" Click="MenuPlayGuitar_Click"
+                        Background="#2200F0FF" Foreground="#00F0FF" BorderBrush="#00F0FF" BorderThickness="1"
+                        FontFamily="Consolas" FontSize="10.5" FontWeight="Bold" Padding="6,2" Margin="2,0" Cursor="Hand"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Поле ввода текста (открывается по кнопке ЧАТ, Alt+J или двойному клику на Джонни) -->
+        <Border x:Name="InputPanel" Grid.Row="3" Margin="8,0,8,6" Background="#F50B0F17"
+                BorderBrush="#FCEE09" BorderThickness="1.5" CornerRadius="3" Padding="7,6" Visibility="Collapsed">
+            <DockPanel>
+                <TextBlock Text="ВИ &gt; " Foreground="#00F0FF" FontFamily="Consolas" FontWeight="Bold"
+                           FontSize="12.5" VerticalAlignment="Center" DockPanel.Dock="Left"/>
+                <TextBox x:Name="PromptTextBox" Background="Transparent" Foreground="#FCEE09"
+                         CaretBrush="#00F0FF" BorderThickness="0" FontFamily="Consolas" FontSize="13"
+                         KeyDown="PromptTextBox_KeyDown"
+                         ToolTip="Напиши Джонни и нажми Enter (Esc — скрыть)"/>
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>
+</file>
+
+<file path="frontend/MainWindow.xaml.cs">
+// MainWindow.xaml.cs — C# (.NET WPF) Живой 60 FPS скелетный 2.5D-риг Джонни Сильверхенда (Live2D / Spine стиль)
+// Включает:
+// - Отслеживание курсора мыши головой Джонни (GetCursorPos)
+// - Реалистичный Lip-Sync (движение нижней челюсти и бороды синхронно с русской речью)
+// - Анимацию курения с поднимающейся рукой, тлеющим угольком и частицами дыма (60 FPS)
+// - Независимую жестикуляцию серебряной бионической рукой и игру на электрогитаре Samurai
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Net.Http;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
+using Ellipse = System.Windows.Shapes.Ellipse;
+using Forms = System.Windows.Forms;
+
+namespace JohnnyOverlay
+{
+    public partial class MainWindow : Window
+    {
+        // --- Win32 API (user32.dll) ---
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetCursorPos(out POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+        [DllImport("user32.dll")]
+        private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        private const int HOTKEY_ID_TOGGLE_HIDE = 9077;
+        private const int HOTKEY_ID_QUICK_CHAT = 9078;
+        private const uint MOD_ALT = 0x0001;
+        private const uint MOD_CONTROL = 0x0002;
+        private const uint VK_H = 0x48;
+        private const uint VK_J = 0x4A;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT
+        {
+            public int X;
+            public int Y;
+        }
+
+        private sealed class SmokeParticle
+        {
+            public Ellipse Visual = null!;
+            public double X;
+            public double Y;
+            public double Vx;
+            public double Vy;
+            public double Size;
+            public double Life;
+            public double MaxLife;
+        }
+
+        private readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
+        private readonly MediaPlayer _player = new MediaPlayer();
+        private readonly DispatcherTimer _windowTrackerTimer;
+        private readonly DispatcherTimer _glitchTimer;
+        private readonly DispatcherTimer _animTimer;
+        private readonly DispatcherTimer _checkInTimer;
+        private readonly Random _rng = new Random();
+
+        private readonly Dictionary<string, BitmapImage> _specialSprites = new Dictionary<string, BitmapImage>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<SmokeParticle> _smokeParticles = new List<SmokeParticle>();
+        private readonly string _projectRoot;
+        private Process? _backendProcess;
+        private Forms.NotifyIcon? _trayIcon;
+
+        private bool _isDragging = false;
+        private bool _isSpeaking = false;
+        private bool _snapToActiveWindow = true;
+        private bool _pseudoendotrizineMode = true;
+        private bool _proactiveCheckInEnabled = true;
+        private int _glitchTicksRemaining = 0;
+
+        // Переменные скелетной физики (60 FPS)
+        private double _time = 0.0;
+        private double _currentHeadAngle = 0.0;
+        private double _currentHeadX = 0.0;
+        private double _currentArmRightAngle = 0.0;
+        private double _currentArmLeftAngle = 0.0;
+        private double _currentJawOpen = 0.0;
+        private double _guitarModeTimer = 0.0;
+
+        private string _currentSpriteState = "idle";
+        private string _postGlitchSpriteState = "idle";
+
+        public MainWindow()
+        {
+            InitializeComponent();
+
+            _projectRoot = ResolveProjectRoot();
+            LoadRigAndSprites();
+            InitializeTrayIcon();
+
+            var workArea = SystemParameters.WorkArea;
+            Left = workArea.Right - Width - 24;
+            Top = workArea.Bottom - Height - 8;
+
+            _player.MediaEnded += (_, _) =>
+            {
+                _isSpeaking = false;
+                VoiceEqPanel.Visibility = Visibility.Collapsed;
+                _postGlitchSpriteState = "idle";
+                SetSpriteState("idle");
+            };
+
+            // Таймер 60 FPS (16 мс) для живой скелетной анимации, слежения за мышью, Lip-Sync и дыма
+            _animTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(16)
+            };
+            _animTimer.Tick += OnSkeletalAnimationTick;
+            _animTimer.Start();
+
+            // Таймер отслеживания активного окна Windows
+            _windowTrackerTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(200)
+            };
+            _windowTrackerTimer.Tick += OnWindowTrackerTick;
+            _windowTrackerTimer.Start();
+
+            // Таймер визуального глитча биочипа Relic
+            _glitchTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(45)
+            };
+            _glitchTimer.Tick += OnGlitchTick;
+
+            // Таймер фоновых реакций «Check in on me» (раз в 12 минут)
+            _checkInTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMinutes(12)
+            };
+            _checkInTimer.Tick += OnProactiveCheckInTick;
+            _checkInTimer.Start();
+
+            SourceInitialized += OnWindowSourceInitialized;
+            Closed += OnWindowClosed;
+
+            Loaded += async (_, _) =>
+            {
+                await EnsurePythonBackendRunningAsync();
+                TriggerRelicGlitch(16, "talk");
+                await AskJohnnyAsync("Ты только что прогрузился на рабочий стол Ви. Поприветствуй его в своём стиле в 1 предложении.");
+            };
+        }
+
+        private static string ResolveProjectRoot()
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            DirectoryInfo? dir = new DirectoryInfo(baseDir);
+            while (dir != null)
+            {
+                if (Directory.Exists(Path.Combine(dir.FullName, "backend")) ||
+                    Directory.Exists(Path.Combine(dir.FullName, "assets")))
+                {
+                    return dir.FullName;
+                }
+                dir = dir.Parent;
+            }
+            return Directory.GetCurrentDirectory();
+        }
+
+        private static BitmapImage? LoadBitmap(string path)
+        {
+            if (!File.Exists(path)) return null;
+            try
+            {
+                var bmp = new BitmapImage();
+                bmp.BeginInit();
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+                bmp.UriSource = new Uri(path, UriKind.Absolute);
+                bmp.EndInit();
+                bmp.Freeze();
+                return bmp;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        public void LoadRigAndSprites()
+        {
+            string rigDir = Path.Combine(_projectRoot, "assets", "rig");
+            RigLowerImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_lower.png"));
+            RigTorsoImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_torso.png"));
+            RigArmRightImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_arm_right.png"));
+            RigArmLeftImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_arm_left.png"));
+            RigHeadImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_head.png"));
+            RigJawImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_jaw.png"));
+            RigGuitarImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_guitar.png"));
+
+            string spritesDir = Path.Combine(_projectRoot, "assets", "sprites");
+            foreach (string state in new[] { "drag", "glitch", "idle" })
+            {
+                var bmp = LoadBitmap(Path.Combine(spritesDir, $"johnny_{state}.png"));
+                if (bmp != null)
+                    _specialSprites[state] = bmp;
+            }
+
+            SetSpriteState("idle");
+        }
+
+        public void SetSpriteState(string state)
+        {
+            _currentSpriteState = state;
+
+            if (state == "glitch" || state == "drag")
+            {
+                if (_specialSprites.TryGetValue(state, out var bmp))
+                {
+                    SpecialStateImage.Source = bmp;
+                    SpecialStateImage.Visibility = Visibility.Visible;
+                    RigRootGrid.Opacity = 0.15;
+                }
+                return;
+            }
+
+            SpecialStateImage.Visibility = Visibility.Collapsed;
+            RigRootGrid.Opacity = 1.0;
+
+            if (state == "guitar")
+            {
+                RigGuitarImage.Visibility = Visibility.Visible;
+                _guitarModeTimer = 8.0; // Играет рифф 8 секунд
+            }
+            else
+            {
+                RigGuitarImage.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        // --- Главный цикл 60 FPS процедурной скелетной анимации ---
+        private void OnSkeletalAnimationTick(object? sender, EventArgs e)
+        {
+            const double dt = 0.016;
+            _time += dt;
+
+            if (_guitarModeTimer > 0)
+            {
+                _guitarModeTimer -= dt;
+                if (_guitarModeTimer <= 0 && _currentSpriteState == "guitar")
+                    SetSpriteState(_isSpeaking ? "talk" : "idle");
+            }
+
+            // 1. Бегущий голографический луч сканирования по высоте модели
+            ScanlineTranslate.Y = ((Math.Sin(_time * 1.4) + 1.0) * 0.5) * 305.0 + 10.0;
+
+            // 2. Живое глубокое дыхание грудной клетки и плеч
+            double breath = Math.Sin(_time * 2.1);
+            TorsoScale.ScaleY = 1.0 + breath * 0.012;
+            TorsoScale.ScaleX = 1.0 + breath * 0.008;
+            TorsoTranslate.Y = -breath * 1.6;
+            TorsoRotate.Angle = Math.Sin(_time * 1.05) * 0.8;
+
+            // 3. Отслеживание курсора мыши головой Джонни + кивание во время речи/гитары
+            double targetHeadAngle = 0.0;
+            double targetHeadX = 0.0;
+            if (GetCursorPos(out POINT mousePt))
+            {
+                double headCenterX = Left + Width - 130;
+                double headCenterY = Top + 140;
+                double dx = (mousePt.X - headCenterX) / 420.0;
+                double dy = (mousePt.Y - headCenterY) / 420.0;
+                targetHeadAngle = Math.Clamp(dx * 5.5, -6.5, 6.5);
+                targetHeadX = Math.Clamp(dx * 2.5, -3.0, 3.0);
+                HeadTranslate.Y = Math.Clamp(dy * 2.0, -2.5, 2.5);
+            }
+
+            if (_isSpeaking)
+            {
+                // Энергичные наклоны головы в такт словам
+                targetHeadAngle += Math.Sin(_time * 9.5) * 2.8 + Math.Cos(_time * 6.2) * 1.5;
+            }
+            else if (_currentSpriteState == "guitar")
+            {
+                // Качает головой в рок-н-ролльный бит Samurai
+                targetHeadAngle = Math.Sin(_time * 14.0) * 5.5;
+                HeadTranslate.Y = Math.Abs(Math.Sin(_time * 14.0)) * 3.5;
+            }
+
+            _currentHeadAngle += (targetHeadAngle - _currentHeadAngle) * 0.14;
+            _currentHeadX += (targetHeadX - _currentHeadX) * 0.14;
+            HeadRotate.Angle = _currentHeadAngle;
+            HeadTranslate.X = _currentHeadX;
+
+            // 4. Реалистичный Lip-Sync (движение нижней челюсти и бороды при разговоре)
+            double targetJawY = 0.0;
+            if (_isSpeaking)
+            {
+                // Многочастотная огибающая русской речи (слоговая артикуляция)
+                double syllable = Math.Sin(_time * 18.0) * Math.Cos(_time * 11.0) + Math.Sin(_time * 27.0) * 0.5;
+                targetJawY = Math.Clamp(Math.Abs(syllable) * 3.4, 0.4, 4.2);
+
+                // Обновляем столбики эквалайзера в HUD
+                EqBar1.Height = 4 + Math.Abs(Math.Sin(_time * 19.0)) * 11;
+                EqBar2.Height = 5 + Math.Abs(Math.Cos(_time * 23.0)) * 11;
+                EqBar3.Height = 4 + Math.Abs(Math.Sin(_time * 15.0)) * 10;
+                EqBar4.Height = 5 + Math.Abs(Math.Cos(_time * 27.0)) * 11;
+            }
+            _currentJawOpen += (targetJawY - _currentJawOpen) * 0.35;
+            JawTranslate.Y = _currentJawOpen;
+
+            // 5. Анимация правой руки (курение в idle, жестикуляция в talk, бой по струнам в guitar)
+            double targetArmRight = Math.Sin(_time * 1.7) * 1.8;
+            bool isTakingDrag = false;
+
+            if (_currentSpriteState == "guitar")
+            {
+                // Быстрый гитарный чес правой рукой по струнам Deluze Orphean
+                targetArmRight = -16.0 + Math.Sin(_time * 28.0) * 7.5;
+                GuitarRotate.Angle = Math.Sin(_time * 14.0) * 3.2;
+            }
+            else if (_isSpeaking)
+            {
+                // Выразительная жестикуляция рукой во время реплики
+                targetArmRight = -5.5 + Math.Sin(_time * 7.5) * 4.8 + Math.Cos(_time * 4.2) * 2.5;
+            }
+            else
+            {
+                // Периодическая затяжка сигаретой каждые ~9 секунд в режиме ожидания
+                double cycle = _time % 9.5;
+                if (cycle > 6.2 && cycle < 8.6)
+                {
+                    targetArmRight = -11.5; // Поднимает руку с чипом/сигаретой ближе к лицу
+                    isTakingDrag = true;
+                }
+            }
+
+            _currentArmRightAngle += (targetArmRight - _currentArmRightAngle) * 0.12;
+            ArmRightRotate.Angle = _currentArmRightAngle;
+
+            // Пульсация тлеющего уголька сигареты / биочипа
+            CigaretteEmber.Opacity = isTakingDrag
+                ? 0.95
+                : (0.55 + Math.Sin(_time * 4.5) * 0.25);
+
+            // 6. Анимация левой серебряной бионической руки
+            double targetArmLeft = -Math.Sin(_time * 1.7) * 1.5;
+            if (_currentSpriteState == "guitar")
+            {
+                targetArmLeft = -6.0 + Math.Cos(_time * 14.0) * 3.5;
+            }
+            else if (_isSpeaking)
+            {
+                targetArmLeft = -3.5 + Math.Sin(_time * 6.0 + 1.2) * 3.8;
+            }
+            _currentArmLeftAngle += (targetArmLeft - _currentArmLeftAngle) * 0.12;
+            ArmLeftRotate.Angle = _currentArmLeftAngle;
+
+            // 7. Обновление частиц дыма сигареты (60 FPS)
+            UpdateSmokeParticles(dt, isTakingDrag);
+        }
+
+        private void UpdateSmokeParticles(double dt, bool intenseSmoke)
+        {
+            // Спавним новую частицу дыма из кончика сигареты
+            double spawnChance = intenseSmoke ? 0.42 : 0.18;
+            if (_currentSpriteState != "guitar" && _rng.NextDouble() < spawnChance && _smokeParticles.Count < 22)
+            {
+                // Смещаем точку спавна дыма с учётом угла поворота правой руки
+                double rad = _currentArmRightAngle * Math.PI / 180.0;
+                double spawnX = 18.0 + Math.Sin(rad) * 12.0;
+                double spawnY = 118.0 + Math.Sin(rad) * 28.0;
+
+                var ellipse = new Ellipse
+                {
+                    Width = 6,
+                    Height = 6,
+                    Fill = new SolidColorBrush(Color.FromArgb(140, 160, 245, 255)),
+                    IsHitTestVisible = false
+                };
+                SmokeCanvas.Children.Add(ellipse);
+
+                _smokeParticles.Add(new SmokeParticle
+                {
+                    Visual = ellipse,
+                    X = spawnX + (_rng.NextDouble() - 0.5) * 4.0,
+                    Y = spawnY,
+                    Vx = (_rng.NextDouble() - 0.35) * 8.0,
+                    Vy = -18.0 - _rng.NextDouble() * 12.0,
+                    Size = 5.0 + _rng.NextDouble() * 3.0,
+                    Life = 0.0,
+                    MaxLife = 1.6 + _rng.NextDouble() * 0.9
+                });
+            }
+
+            for (int i = _smokeParticles.Count - 1; i >= 0; i--)
+            {
+                var p = _smokeParticles[i];
+                p.Life += dt;
+                if (p.Life >= p.MaxLife)
+                {
+                    SmokeCanvas.Children.Remove(p.Visual);
+                    _smokeParticles.RemoveAt(i);
+                    continue;
+                }
+
+                double progress = p.Life / p.MaxLife;
+                p.X += (p.Vx + Math.Sin(_time * 3.0 + i) * 6.0) * dt;
+                p.Y += p.Vy * dt;
+                p.Size += 8.5 * dt;
+
+                p.Visual.Width = p.Size;
+                p.Visual.Height = p.Size;
+                p.Visual.Opacity = (1.0 - progress) * 0.45;
+                Canvas.SetLeft(p.Visual, p.X - p.Size * 0.5);
+                Canvas.SetTop(p.Visual, p.Y - p.Size * 0.5);
+            }
+        }
+
+        private async Task EnsurePythonBackendRunningAsync()
+        {
+            if (await IsBackendHealthyAsync())
+                return;
+
+            string serverScript = Path.Combine(_projectRoot, "backend", "engram_server.py");
+            if (!File.Exists(serverScript))
+                return;
+
+            string venvPython = Path.Combine(_projectRoot, "backend", "venv", "Scripts", "python.exe");
+            string pythonExe = File.Exists(venvPython) ? venvPython : "python";
+
+            try
+            {
+                SpeechText.Text = "⚡ [ЗАПУСК ЯДРА ЭНГРАММЫ RELIC В ФОНЕ...]";
+                var psi = new ProcessStartInfo
+                {
+                    FileName = pythonExe,
+                    Arguments = $"\"{serverScript}\"",
+                    WorkingDirectory = Path.Combine(_projectRoot, "backend"),
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                };
+                _backendProcess = Process.Start(psi);
+
+                for (int i = 0; i < 16; i++)
+                {
+                    await Task.Delay(500);
+                    if (await IsBackendHealthyAsync())
+                        break;
+                }
+            }
+            catch
+            {
+                // Ошибка автозапуска отобразится при запросе в чат
+            }
+        }
+
+        private async Task<bool> IsBackendHealthyAsync()
+        {
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromMilliseconds(900));
+                var resp = await _http.GetAsync("http://127.0.0.1:8077/health", cts.Token);
+                return resp.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void InitializeTrayIcon()
+        {
+            _trayIcon = new Forms.NotifyIcon
+            {
+                Text = "Johnny Silverhand — Relic Engram (Alt+J чат / Ctrl+Alt+H скрыть)",
+                Visible = true
+            };
+
+            string icoPath = Path.Combine(_projectRoot, "assets", "sprites", "relic_tray.ico");
+            if (File.Exists(icoPath))
+            {
+                try
+                {
+                    _trayIcon.Icon = new System.Drawing.Icon(icoPath);
+                }
+                catch
+                {
+                    _trayIcon.Icon = System.Drawing.SystemIcons.Application;
+                }
+            }
+            else
+            {
+                _trayIcon.Icon = System.Drawing.SystemIcons.Application;
+            }
+
+            var trayMenu = new Forms.ContextMenuStrip();
+            trayMenu.Items.Add("💬 Написать Джонни (Alt+J)", null, (_, _) => Dispatcher.Invoke(OpenChatBox));
+            trayMenu.Items.Add("Показать / Скрыть Джонни (Ctrl+Alt+H)", null, (_, _) => Dispatcher.Invoke(ToggleOverlayVisibility));
+            trayMenu.Items.Add("👁 Прокомментировать экран (Vision)", null, async (_, _) =>
+                await Dispatcher.InvokeAsync(() => AskJohnnyAsync("Посмотри на мой экран и прокомментируй, чем я сейчас занимаюсь.", watchScreen: true)));
+            trayMenu.Items.Add("💊 Переключить Псевдоэндотризин (Управление ПК)", null, (_, _) =>
+                Dispatcher.Invoke(() => MenuToggleControl_Click(this, new RoutedEventArgs())));
+            trayMenu.Items.Add("📝 Открыть характер (personality.md)", null, (_, _) =>
+                Dispatcher.Invoke(() => MenuOpenPersonality_Click(this, new RoutedEventArgs())));
+            trayMenu.Items.Add(new Forms.ToolStripSeparator());
+            trayMenu.Items.Add("❌ Отключить биочип (Выход)", null, (_, _) =>
+                Dispatcher.Invoke(() => Application.Current.Shutdown()));
+
+            _trayIcon.ContextMenuStrip = trayMenu;
+            _trayIcon.DoubleClick += (_, _) => Dispatcher.Invoke(OpenChatBox);
+        }
+
+        private void OnWindowSourceInitialized(object? sender, EventArgs e)
+        {
+            IntPtr handle = new WindowInteropHelper(this).Handle;
+            HwndSource? source = HwndSource.FromHwnd(handle);
+            source?.AddHook(WndProc);
+            RegisterHotKey(handle, HOTKEY_ID_TOGGLE_HIDE, MOD_CONTROL | MOD_ALT, VK_H);
+            RegisterHotKey(handle, HOTKEY_ID_QUICK_CHAT, MOD_ALT, VK_J);
+        }
+
+        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            const int WM_HOTKEY = 0x0312;
+            if (msg == WM_HOTKEY)
+            {
+                int id = wParam.ToInt32();
+                if (id == HOTKEY_ID_TOGGLE_HIDE)
+                {
+                    ToggleOverlayVisibility();
+                    handled = true;
+                }
+                else if (id == HOTKEY_ID_QUICK_CHAT)
+                {
+                    OpenChatBox();
+                    handled = true;
+                }
+            }
+            return IntPtr.Zero;
+        }
+
+        private void OpenChatBox()
+        {
+            if (Visibility != Visibility.Visible)
+                Visibility = Visibility.Visible;
+
+            InputPanel.Visibility = Visibility.Visible;
+            Activate();
+            PromptTextBox.Focus();
+        }
+
+        private void ToggleOverlayVisibility()
+        {
+            if (Visibility == Visibility.Visible)
+            {
+                Visibility = Visibility.Hidden;
+            }
+            else
+            {
+                Visibility = Visibility.Visible;
+                Activate();
+                TriggerRelicGlitch(12, "idle");
+            }
+        }
+
+        private void OnWindowClosed(object? sender, EventArgs e)
+        {
+            IntPtr handle = new WindowInteropHelper(this).Handle;
+            if (handle != IntPtr.Zero)
+            {
+                UnregisterHotKey(handle, HOTKEY_ID_TOGGLE_HIDE);
+                UnregisterHotKey(handle, HOTKEY_ID_QUICK_CHAT);
+            }
+
+            if (_trayIcon != null)
+            {
+                _trayIcon.Visible = false;
+                _trayIcon.Dispose();
+            }
+
+            if (_backendProcess != null && !_backendProcess.HasExited)
+            {
+                try
+                {
+                    _backendProcess.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Игнорируем при закрытии
+                }
+            }
+        }
+
+        private string GetActiveWindowTitle()
+        {
+            IntPtr handle = GetForegroundWindow();
+            if (handle == IntPtr.Zero) return "Рабочий стол Windows";
+            var sb = new StringBuilder(256);
+            if (GetWindowText(handle, sb, 256) > 0)
+            {
+                string title = sb.ToString();
+                if (!title.Contains("JohnnyOverlay"))
+                    return title;
+            }
+            return "Рабочий стол Windows";
+        }
+
+        private void OnWindowTrackerTick(object? sender, EventArgs e)
+        {
+            if (_isDragging || !_snapToActiveWindow || Visibility != Visibility.Visible) return;
+
+            IntPtr fg = GetForegroundWindow();
+            if (fg == IntPtr.Zero) return;
+
+            string title = GetActiveWindowTitle();
+            if (title == "Рабочий стол Windows") return;
+
+            var workArea = SystemParameters.WorkArea;
+            if (GetWindowRect(fg, out RECT rect))
+            {
+                double targetLeft;
+                double targetTop;
+
+                if (rect.Top > 120 && rect.Right > 350 && rect.Right < workArea.Right - 20)
+                {
+                    targetLeft = rect.Right - Width - 20;
+                    targetTop = rect.Top - 110;
+                }
+                else
+                {
+                    targetLeft = workArea.Right - Width - 20;
+                    targetTop = workArea.Bottom - Height - 8;
+                }
+
+                targetLeft = Math.Clamp(targetLeft, workArea.Left + 8, workArea.Right - Width - 8);
+                targetTop = Math.Clamp(targetTop, workArea.Top + 8, workArea.Bottom - Height - 8);
+
+                Left += (targetLeft - Left) * 0.22;
+                Top += (targetTop - Top) * 0.22;
+            }
+        }
+
+        private async void OnProactiveCheckInTick(object? sender, EventArgs e)
+        {
+            if (!_proactiveCheckInEnabled || Visibility != Visibility.Visible) return;
+            string activeTitle = GetActiveWindowTitle();
+            TriggerRelicGlitch(14, "talk");
+            await AskJohnnyAsync($"Ты внезапно проявился через биочип Relic. Прокомментируй в 1-2 дерзких предложениях то, чем сейчас занят Ви в окне «{activeTitle}».");
+        }
+
+        public void TriggerRelicGlitch(int ticks = 14, string afterGlitchState = "idle")
+        {
+            _glitchTicksRemaining = ticks;
+            _postGlitchSpriteState = afterGlitchState;
+            RelicStatusBanner.Visibility = Visibility.Visible;
+            SetSpriteState("glitch");
+            _glitchTimer.Start();
+        }
+
+        private void OnGlitchTick(object? sender, EventArgs e)
+        {
+            if (_glitchTicksRemaining <= 0)
+            {
+                _glitchTimer.Stop();
+                AvatarTranslate.X = 0;
+                AvatarTranslate.Y = 0;
+                AvatarContainer.Opacity = 1.0;
+                RelicStatusBanner.Visibility = Visibility.Collapsed;
+                JohnnyDropShadow.Color = Color.FromRgb(0, 240, 255);
+                SetSpriteState(_postGlitchSpriteState);
+                return;
+            }
+
+            _glitchTicksRemaining--;
+            AvatarTranslate.X = _rng.Next(-10, 11);
+            AvatarTranslate.Y = _rng.Next(-4, 5);
+            AvatarContainer.Opacity = _rng.NextDouble() * 0.35 + 0.65;
+            JohnnyDropShadow.Color = (_glitchTicksRemaining % 2 == 0)
+                ? Color.FromRgb(0, 240, 255)
+                : Color.FromRgb(252, 238, 9);
+        }
+
+        private void Avatar_MouseEnter(object sender, MouseEventArgs e)
+        {
+            QuickActionBar.Opacity = 1.0;
+            JohnnyDropShadow.BlurRadius = 26;
+        }
+
+        private void Avatar_MouseLeave(object sender, MouseEventArgs e)
+        {
+            QuickActionBar.Opacity = 0.88;
+            JohnnyDropShadow.BlurRadius = 18;
+        }
+
+        private void Avatar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount == 2)
+            {
+                OpenChatBox();
+                return;
+            }
+
+            _isDragging = true;
+            SetSpriteState("drag");
+
+            if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
+            {
+                _snapToActiveWindow = false;
+                MenuSnapItem.Header = "📌 Привязка к активным окнам: ВЫКЛ";
+            }
+
+            try
+            {
+                DragMove();
+            }
+            finally
+            {
+                _isDragging = false;
+                SetSpriteState(_isSpeaking ? "talk" : "idle");
+            }
+        }
+
+        private void QuickChat_Click(object sender, RoutedEventArgs e)
+        {
+            if (InputPanel.Visibility == Visibility.Visible)
+                InputPanel.Visibility = Visibility.Collapsed;
+            else
+                OpenChatBox();
+        }
+
+        private async void PromptTextBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter && !string.IsNullOrWhiteSpace(PromptTextBox.Text))
+            {
+                string userText = PromptTextBox.Text.Trim();
+                PromptTextBox.Clear();
+                InputPanel.Visibility = Visibility.Collapsed;
+                await AskJohnnyAsync(userText);
+            }
+            else if (e.Key == Key.Escape)
+            {
+                InputPanel.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private async Task AskJohnnyAsync(string message, bool watchScreen = false)
+        {
+            SpeechBubble.Visibility = Visibility.Visible;
+            SpeechText.Text = "⚡ [СИНХРОНИЗАЦИЯ НЕЙРОСЕТИ С БИОЧИПОМ RELIC...]";
+            SetSpriteState("talk");
+
+            var payload = new
+            {
+                message = message,
+                active_window = GetActiveWindowTitle(),
+                include_screenshot = watchScreen,
+                allow_actions = _pseudoendotrizineMode
+            };
+
+            try
+            {
+                var content = new StringContent(
+                    JsonSerializer.Serialize(payload),
+                    Encoding.UTF8,
+                    "application/json"
+                );
+                var response = await _http.PostAsync("http://127.0.0.1:8077/chat", content);
+                response.EnsureSuccessStatusCode();
+
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                var root = doc.RootElement;
+
+                string reply = root.GetProperty("reply").GetString() ?? "";
+                bool glitch = root.GetProperty("relic_glitch").GetBoolean();
+                string spriteState = root.TryGetProperty("sprite_state", out var sp) && sp.ValueKind == JsonValueKind.String
+                    ? (sp.GetString() ?? "talk")
+                    : "talk";
+                string? audioPath = root.TryGetProperty("audio_path", out var ap) && ap.ValueKind == JsonValueKind.String
+                    ? ap.GetString()
+                    : null;
+
+                SpeechText.Text = reply;
+
+                bool hasAudio = !string.IsNullOrEmpty(audioPath) && File.Exists(audioPath);
+                string targetState = spriteState == "guitar" ? "guitar" : (hasAudio ? "talk" : "idle");
+
+                if (glitch)
+                {
+                    TriggerRelicGlitch(14, targetState);
+                }
+                else
+                {
+                    SetSpriteState(targetState);
+                }
+
+                if (hasAudio && audioPath != null)
+                {
+                    _isSpeaking = true;
+                    VoiceEqPanel.Visibility = Visibility.Visible;
+                    _player.Open(new Uri(audioPath, UriKind.Absolute));
+                    _player.Play();
+                }
+            }
+            catch (Exception)
+            {
+                _isSpeaking = false;
+                VoiceEqPanel.Visibility = Visibility.Collapsed;
+                TriggerRelicGlitch(12, "idle");
+                SpeechText.Text = "Ви, твой Python-сервер энграммы молчит. Перезапусти Start-Johnny.bat, чумба!";
+            }
+        }
+
+        private async void MenuWatchScreen_Click(object sender, RoutedEventArgs e)
+        {
+            await AskJohnnyAsync("Посмотри на мой экран и прокомментируй, чем я сейчас занимаюсь.", watchScreen: true);
+        }
+
+        private void MenuPlayGuitar_Click(object sender, RoutedEventArgs e)
+        {
+            TriggerRelicGlitch(10, "guitar");
+            SpeechText.Text = "🎸 Врубай Samurai — Never Fade Away на полную катушку, чумба!";
+        }
+
+        private void MenuToggleSnap_Click(object sender, RoutedEventArgs e)
+        {
+            _snapToActiveWindow = !_snapToActiveWindow;
+            MenuSnapItem.Header = _snapToActiveWindow
+                ? "📌 Привязка к активным окнам: ВКЛ"
+                : "📌 Привязка к активным окнам: ВЫКЛ";
+        }
+
+        private void MenuToggleControl_Click(object sender, RoutedEventArgs e)
+        {
+            _pseudoendotrizineMode = !_pseudoendotrizineMode;
+            MenuControlItem.Header = _pseudoendotrizineMode
+                ? "💊 Псевдоэндотризин (Управление ПК): ВКЛ"
+                : "💊 Псевдоэндотризин (Управление ПК): ВЫКЛ";
+            TriggerRelicGlitch(10, "idle");
+        }
+
+        private void MenuToggleCheckIn_Click(object sender, RoutedEventArgs e)
+        {
+            _proactiveCheckInEnabled = !_proactiveCheckInEnabled;
+            MenuCheckInItem.Header = _proactiveCheckInEnabled
+                ? "⏱ Фоновые реакции (раз в 12 мин): ВКЛ"
+                : "⏱ Фоновые реакции (раз в 12 мин): ВЫКЛ";
+        }
+
+        private void MenuOpenPersonality_Click(object sender, RoutedEventArgs e)
+        {
+            string file = Path.Combine(_projectRoot, "backend", "personality.md");
+            if (File.Exists(file))
+                Process.Start(new ProcessStartInfo("notepad.exe", $"\"{file}\"") { UseShellExecute = true });
+        }
+
+        private void MenuOpenMemory_Click(object sender, RoutedEventArgs e)
+        {
+            string file = Path.Combine(_projectRoot, "backend", "me.md");
+            if (File.Exists(file))
+                Process.Start(new ProcessStartInfo("notepad.exe", $"\"{file}\"") { UseShellExecute = true });
+        }
+
+        private void MenuHideToTray_Click(object sender, RoutedEventArgs e)
+        {
+            ToggleOverlayVisibility();
+        }
+
+        private void MenuExit_Click(object sender, RoutedEventArgs e)
+        {
+            Application.Current.Shutdown();
+        }
+    }
+}
+</file>
+
+</files>

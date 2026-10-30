@@ -10,9 +10,9 @@
 | **Этап 2. Мозг и характер** | ✅ Готово | [engram_server.py](backend/engram_server.py), [personality.md](backend/personality.md), [me.md](backend/me.md) на `127.0.0.1:8077` |
 | **Этап 3. Оверлей и физика окон** | ✅ Готово | Прозрачный киберпанк-оверлей [MainWindow.xaml](frontend/MainWindow.xaml) + привязка к окнам через `user32.dll` в [MainWindow.xaml.cs](frontend/MainWindow.xaml.cs) |
 | **Этап 4. Русский голос + DSP + RVC** | ✅ Готово | Русский синтез `edge-tts` + фильтр биочипа `apply_relic_engram_dsp` + автоподхват RVC v2 моделей Ильи Бледного из `backend/models/johnny_ru/` |
-| **Этап 5. Спрайты и анимации** | ✅ Готово | 5 состояний в `assets/sprites/` (`johnny_idle.png`, `johnny_talk.png`, `johnny_drag.png`, `johnny_guitar.png`, `johnny_glitch.png`) |
+| **Этап 5. Спрайты и 60 FPS Скелетный Риг** | ✅ Готово | Игровые 3D-рендеры REDengine 4 в `assets/sprites/` + многослойный 60 FPS 2.5D-риг в `assets/rig/` (слежение головой за мышью, Lip-Sync челюсти, курение с частицами дыма и игра на гитаре) |
 | **Этап 6. Зрение и управление ПК** | ✅ Готово | Скриншоты через `mss` для Vision-моделей (`qwen2.5vl:7b`), таймер реакций раз в 12 минут, управление громкостью, медиа, вкладками и приложениями |
-| **Этап 7. Трей и лаунчер `.exe`** | ✅ Готово | Иконка в системном трее (`relic_tray.ico`), глобальный хоткей `Ctrl + Alt + H`, автозапуск Python из C# и релизная сборка в `release/JohnnyOverlay.exe` |
+| **Этап 7. Трей и лаунчер `.exe`** | ✅ Готово | Иконка в системном трее (`relic_tray.ico`), глобальные хоткеи `Alt + J` (чат) и `Ctrl + Alt + H` (скрыть), автозапуск Python из C# и релизная сборка в `release/JohnnyOverlay.exe` |
 
 ## Быстрый запуск в один клик
 
