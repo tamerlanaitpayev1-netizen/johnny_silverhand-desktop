@@ -20,8 +20,8 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
 using System.Windows.Threading;
+using Ellipse = System.Windows.Shapes.Ellipse;
 using Forms = System.Windows.Forms;
 
 namespace JohnnyOverlay
