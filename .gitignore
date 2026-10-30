@@ -1,0 +1,14 @@
+# Python virtual environment & caches
+backend/venv/
+backend/__pycache__/
+backend/temp_audio/
+*.pyc
+
+# RVC large model weights (keep directory structure)
+backend/models/johnny_ru/*.pth
+backend/models/johnny_ru/*.index
+
+# .NET build artifacts
+frontend/bin/
+frontend/obj/
+release/*.pdb
