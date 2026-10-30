@@ -476,11 +476,11 @@ async def query_llm(user_prompt: str, screenshot_b64: Optional[str] = None) -> s
     payload = {
         "model": selected_model,
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": system_prompt + "\nОтвечай строго на русском языке, без блоков кода ``` и без иероглифов, максимум 2-3 предложения."},
             user_msg,
         ],
         "stream": False,
-        "options": {"temperature": 0.85},
+        "options": {"temperature": 0.72, "num_predict": 140, "repeat_penalty": 1.15},
     }
     try:
         async with httpx.AsyncClient(timeout=35.0) as client:
@@ -489,6 +489,15 @@ async def query_llm(user_prompt: str, screenshot_b64: Optional[str] = None) -> s
             return resp.json()["message"]["content"].strip()
     except Exception:
         return "Просыпайся, самурай... Похоже, у тебя Ollama ещё загружает нейросеть или не запущена. Выполни `ollama pull qwen2.5:7b`, чумба."
+
+
+def sanitize_russian_reply(text: str) -> str:
+    import re
+    cleaned = re.sub(r"```[\s\S]*?```", "", text)
+    cleaned = re.sub(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+", "", cleaned)
+    cleaned = re.sub(r"\[Активное окно[^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned).strip()
+    return cleaned or "Хм. Биочип сбоит, чумба. Повтори ещё раз."
 
 
 @app.get("/health")
@@ -571,7 +580,7 @@ async def chat_with_johnny(req: ChatRequest):
         else:
             clean_lines.append(line)
 
-    final_reply = "\n".join(clean_lines).strip()
+    final_reply = sanitize_russian_reply("\n".join(clean_lines).strip())
     audio_path = await synthesize_johnny_voice(final_reply)
     audio_envelope = compute_wav_rms_envelope(Path(audio_path)) if audio_path else []
 

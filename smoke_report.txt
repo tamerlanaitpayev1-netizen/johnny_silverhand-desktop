@@ -1,0 +1,18 @@
+=== RELIC ENGRAM v2.0 AUTOMATED SMOKE TEST ===
+[PASS] Rig Layer: rig_hair_back.png
+[PASS] Rig Layer: rig_leg_left.png
+[PASS] Rig Layer: rig_leg_right.png
+[PASS] Rig Layer: rig_lower.png
+[PASS] Rig Layer: rig_torso.png
+[PASS] Rig Layer: rig_arm_right.png
+[PASS] Rig Layer: rig_arm_left.png
+[PASS] Rig Layer: rig_head.png
+[PASS] Rig Layer: rig_glasses_glint.png
+[PASS] Rig Layer: rig_jaw.png
+[PASS] Rig Layer: rig_guitar.png
+[PASS] Sprite Strip: strip_beam_in.png
+[PASS] Sprite Strip: strip_malorian_spin.png
+[PASS] Sprite Strip: strip_sleep.png
+[PASS] Sprite Strip: strip_walk.png
+[PASS] Backend /health: {"status":"online","llm_mode":"ollama","ollama_model":"qwen2.5:7b","voice_enabled":true,"dsp_strength":1.0,"rvc_model_loaded":false,"rvc_files":[],"ffmpeg":"C:\\Users\\Тамерлан\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-9.0.2-full_build\\bin\\ffmpeg.EXE"}
+=== RESULT: ALL ASSETS & RIG CHECKS PASSED ===
