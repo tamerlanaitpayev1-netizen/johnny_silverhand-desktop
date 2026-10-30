@@ -1,0 +1,88 @@
+<Window x:Class="JohnnyOverlay.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="JohnnyOverlay" Width="360" Height="350"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Облако реплики Джонни в стиле HUD Cyberpunk 2077 -->
+        <Border x:Name="SpeechBubble" Grid.Row="0" Margin="8,4,8,4" Padding="10,8"
+                Background="#E60D1117" BorderBrush="#00F0FF" BorderThickness="1.5"
+                CornerRadius="2,10,2,2" Visibility="Visible">
+            <StackPanel>
+                <TextBlock x:Name="RelicStatusBanner" Text="⚠ СБОЙ БИОЧИПА RELIC // ENGRAM SYNC"
+                           Foreground="#FCEE09" FontFamily="Consolas" FontSize="10" FontWeight="Bold"
+                           Margin="0,0,0,4" Visibility="Collapsed"/>
+                <DockPanel Margin="0,0,0,3">
+                    <TextBlock Text="ДЖОННИ СИЛЬВЕРХЕНД" Foreground="#00F0FF"
+                               FontFamily="Consolas" FontSize="11" FontWeight="Bold"/>
+                    <TextBlock x:Name="ModeStatusText" Text="[LOCAL RTX]" Foreground="#FCEE09"
+                               FontFamily="Consolas" FontSize="9.5" HorizontalAlignment="Right"/>
+                </DockPanel>
+                <TextBlock x:Name="SpeechText" Text="Просыпайся, самурай. У нас тут неразгребённый рабочий стол."
+                           Foreground="#FFFFFF" FontFamily="Segoe UI" FontSize="12.5" TextWrapping="Wrap"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Контейнер спрайта / аватара Джонни с голографическим свечением энграммы -->
+        <Grid x:Name="AvatarContainer" Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+              Margin="0,0,16,4" Cursor="Hand" MouseLeftButtonDown="Avatar_MouseLeftButtonDown">
+            <Grid.RenderTransform>
+                <TranslateTransform x:Name="AvatarTranslate" X="0" Y="0"/>
+            </Grid.RenderTransform>
+            <Grid.Effect>
+                <DropShadowEffect x:Name="JohnnyDropShadow" Color="#00F0FF" BlurRadius="18" ShadowDepth="0" Opacity="0.85"/>
+            </Grid.Effect>
+
+            <!-- Контекстное меню по правому клику (как в capri-desktop) -->
+            <Grid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="👁 Прокомментировать мой экран (Vision)" Click="MenuWatchScreen_Click"/>
+                    <MenuItem Header="🎸 Сыграть рифф Samurai (Гитара)" Click="MenuPlayGuitar_Click"/>
+                    <Separator/>
+                    <MenuItem x:Name="MenuSnapItem" Header="📌 Привязка к активным окнам: ВКЛ" Click="MenuToggleSnap_Click"/>
+                    <MenuItem x:Name="MenuControlItem" Header="💊 Псевдоэндотризин (Управление ПК): ВКЛ" Click="MenuToggleControl_Click"/>
+                    <MenuItem x:Name="MenuCheckInItem" Header="⏱ Фоновые реакции (раз в 12 мин): ВКЛ" Click="MenuToggleCheckIn_Click"/>
+                    <Separator/>
+                    <MenuItem Header="📝 Редактировать характер (personality.md)" Click="MenuOpenPersonality_Click"/>
+                    <MenuItem Header="🧠 Редактировать память о Ви (me.md)" Click="MenuOpenMemory_Click"/>
+                    <MenuItem Header="🙈 Скрыть в трей (Ctrl+Alt+H)" Click="MenuHideToTray_Click"/>
+                    <Separator/>
+                    <MenuItem Header="❌ Отключить биочип (Выход)" Click="MenuExit_Click"/>
+                </ContextMenu>
+            </Grid.ContextMenu>
+
+            <!-- Анимируемый спрайт Джонни (idle / talk / drag / guitar / glitch) -->
+            <Grid Width="165" Height="195">
+                <Image x:Name="JohnnySpriteImage" Width="165" Height="195" Stretch="Uniform"
+                       RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                <!-- Запасной голографический силуэт, если папка assets/sprites пуста -->
+                <Border x:Name="FallbackCard" Width="130" Height="155" Background="#3300F0FF"
+                        BorderBrush="#00F0FF" BorderThickness="1.5" CornerRadius="6" Visibility="Collapsed">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <TextBlock Text="🎸" FontSize="44" HorizontalAlignment="Center"/>
+                        <TextBlock Text="SILVERHAND" Foreground="#FCEE09" FontFamily="Consolas" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center"/>
+                        <TextBlock Text="[2x клик — чат]" Foreground="#00F0FF" FontFamily="Consolas" FontSize="9.5" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Grid>
+
+        <!-- Поле ввода текста (открывается по двойному клику на Джонни) -->
+        <Border x:Name="InputPanel" Grid.Row="2" Margin="8,0,8,6" Background="#F20D1117"
+                BorderBrush="#FCEE09" BorderThickness="1.5" Padding="6" Visibility="Collapsed">
+            <TextBox x:Name="PromptTextBox" Background="Transparent" Foreground="#FCEE09"
+                     CaretBrush="#00F0FF" BorderThickness="0" FontFamily="Consolas" FontSize="12.5"
+                     KeyDown="PromptTextBox_KeyDown"
+                     ToolTip="Напиши Джонни и нажми Enter (Esc — скрыть)"/>
+        </Border>
+    </Grid>
+</Window>
