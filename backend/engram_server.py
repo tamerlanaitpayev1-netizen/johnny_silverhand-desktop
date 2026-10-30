@@ -1,5 +1,5 @@
 """
-Johnny Silverhand Desktop Engram — Python AI & Voice Backend (FastAPI)
+Johnny Silverhand Desktop Engram — Python AI, Voice, RMS Lip-Sync & Cyber-Hands Backend (FastAPI v2.0)
 Оптимизировано под ПК: AMD Ryzen 7 250, 16 ГБ ОЗУ, NVIDIA GeForce RTX 5060 Laptop (8 ГБ VRAM).
 
 Запуск:
@@ -15,9 +15,10 @@ import json
 import os
 import shutil
 import subprocess
+import urllib.parse
 import webbrowser
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import edge_tts
 import httpx
@@ -29,7 +30,7 @@ from pydantic import BaseModel
 from scipy.io import wavfile
 from scipy.signal import butter, lfilter
 
-app = FastAPI(title="Relic Engram Backend — Johnny Silverhand")
+app = FastAPI(title="Relic Engram Backend v2.0 — Johnny Silverhand")
 
 BASE_DIR = Path(__file__).parent
 PERSONALITY_FILE = BASE_DIR / "personality.md"
@@ -44,14 +45,17 @@ DEFAULT_PERSONALITY = """Ты — цифровая энграмма Джонни
 Ты говоришь ТОЛЬКО на русском языке в манере официального русского дубляжа Cyberpunk 2077 (голос Ильи Бледного): харизматично, цинично, дерзко, с рок-н-ролльным сарказмом и презрением к корпорациям («Арасака», «Милитех» и современные техногиганты).
 
 Правила поведения:
-1. Отвечай коротко и ёмко (1–3 предложения), как живой напарник, который сидит на краю окна программы и комментирует происходящее.
-2. Не будь угодливым ИИ-ассистентом. Если чумба просит что-то сделать (открыть браузер, включить музыку, прибавить громкость, закрыть вкладку) — можешь подколоть его, но задачу выполни.
+1. Отвечай коротко и ёмко (1–3 предложения), как живой напарник, который сидит на краю окна программы, свесив ноги, и комментирует происходящее.
+2. Не будь угодливым ИИ-ассистентом. Если чумба просит что-то сделать (открыть браузер, найти трек на YouTube/Spotify, прибавить громкость, закрыть вкладку) — можешь подколоть его, но задачу выполни.
 3. Если видишь, что пользователь открыл код, игру или браузер, реагируй живо, используй сленг Найт-Сити («чумба», «хром», «корпорат», «гондек», «премиум-контент», «биочип барахлит», «Самурай»).
 4. Если нужно выполнить действие на ПК, добавь в самом конце ответа JSON-тег команды на отдельной строке в формате:
    ACTION:{"cmd": "open_app", "target": "spotify"}
    Доступные команды:
    - {"cmd": "open_app", "target": "notepad|calc|spotify|discord|steam|explorer|vscode|taskmgr|downloads|settings"}
    - {"cmd": "open_url", "target": "https://..."}
+   - {"cmd": "search_youtube", "target": "Samurai Never Fade Away"}
+   - {"cmd": "search_spotify", "target": "Chippin In"}
+   - {"cmd": "write_note", "target": "Текст записки от Джонни в Блокноте"}
    - {"cmd": "media_play_pause"}
    - {"cmd": "media_next"}
    - {"cmd": "media_prev"}
@@ -61,7 +65,6 @@ DEFAULT_PERSONALITY = """Ты — цифровая энграмма Джонни
    - {"cmd": "close_tab"}
 """
 
-# Конфигурация LLM (по умолчанию локальная Ollama; можно переключить на облачный OpenAI-совместимый API для экономии 8 ГБ VRAM в играх)
 LLM_MODE = os.getenv("RELIC_LLM_MODE", "ollama")  # "ollama" или "openai_compat"
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 OLLAMA_TAGS_URL = os.getenv("OLLAMA_TAGS_URL", "http://127.0.0.1:11434/api/tags")
@@ -72,14 +75,14 @@ OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://integrate.api.nvidia.com/v
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "meta/llama-3.3-70b-instruct")
 
-# Базовый мужской русский голос (для последующей прогонки через эффект Relic или RVC-модель Ильи Бледного)
 TTS_VOICE = os.getenv("RELIC_TTS_VOICE", "ru-RU-DmitryNeural")
 TTS_PITCH = os.getenv("RELIC_TTS_PITCH", "-8Hz")
 TTS_RATE = os.getenv("RELIC_TTS_RATE", "+5%")
+VOICE_ENABLED = True
+RELIC_DSP_STRENGTH = 1.0
 
 
 def find_ollama_binary() -> Optional[str]:
-    """Находит исполняемый файл ollama.exe."""
     found = shutil.which("ollama")
     if found:
         return found
@@ -91,7 +94,6 @@ def find_ollama_binary() -> Optional[str]:
 
 
 def ensure_ollama_running() -> None:
-    """Автоматически запускает фоновый сервер Ollama, если он ещё не поднят."""
     if LLM_MODE != "ollama":
         return
     ollama_bin = find_ollama_binary()
@@ -106,18 +108,16 @@ def ensure_ollama_running() -> None:
                 [ollama_bin, "serve"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
             )
         except Exception:
             pass
 
 
 def find_ffmpeg_binary() -> str:
-    """Находит исполняемый файл ffmpeg даже если PATH ещё не обновился после установки через winget."""
     found = shutil.which("ffmpeg")
     if found:
         return found
-
     local_appdata = os.environ.get("LOCALAPPDATA", "")
     candidates = [
         os.path.join(local_appdata, "Microsoft", "WinGet", "Links", "ffmpeg.exe"),
@@ -144,24 +144,27 @@ class ChatRequest(BaseModel):
     message: str
     active_window: Optional[str] = None
     include_screenshot: bool = False
-    allow_actions: bool = True  # Режим «Псевдоэндотризин» (разрешить Джонни управлять ПК)
+    allow_actions: bool = True
 
 
 class ChatResponse(BaseModel):
     reply: str
     action_executed: Optional[str] = None
     audio_path: Optional[str] = None
+    audio_envelope: List[float] = []  # Этап 12: массив громкости каждые 30 мс для точного Lip-Sync челюсти
     relic_glitch: bool = False
     sprite_state: str = "talk"
 
 
-class ModeSwitchRequest(BaseModel):
-    mode: str  # "ollama" или "openai_compat"
+class SettingsUpdateRequest(BaseModel):
+    llm_mode: Optional[str] = None
     api_key: Optional[str] = None
+    voice_enabled: Optional[bool] = None
+    dsp_strength: Optional[float] = None
+    pitch: Optional[str] = None
 
 
 def capture_screen_base64() -> Optional[str]:
-    """Делает быстрый скриншот основного монитора и сжимает его для Vision-модели."""
     try:
         with mss.mss() as sct:
             monitor = sct.monitors[1]
@@ -190,7 +193,7 @@ def _tap_vk(vk_code: int, times: int = 1) -> None:
 
 
 def execute_pc_action(action_json: str) -> Optional[str]:
-    """Выполняет безопасные команды на Windows по запросу Джонни (Этап 6)."""
+    """Этапы 6 и 13: Выполняет команды управления Windows и многошаговые задачи курсора Джонни."""
     try:
         data = json.loads(action_json)
         cmd = data.get("cmd")
@@ -223,29 +226,47 @@ def execute_pc_action(action_json: str) -> Optional[str]:
             webbrowser.open(target)
             return f"open_url:{target}"
 
+        elif cmd == "search_youtube" and target:
+            q = urllib.parse.quote_plus(target)
+            webbrowser.open(f"https://www.youtube.com/results?search_query={q}")
+            return f"search_youtube:{target}"
+
+        elif cmd == "search_spotify" and target:
+            q = urllib.parse.quote(target)
+            try:
+                os.startfile(f"spotify:search:{q}")
+            except Exception:
+                webbrowser.open(f"https://open.spotify.com/search/{q}")
+            return f"search_spotify:{target}"
+
+        elif cmd == "write_note" and target:
+            note_file = AUDIO_OUT_DIR / "samurai_message.txt"
+            note_file.write_text(f"=== СООБЩЕНИЕ ОТ ДЖОННИ СИЛЬВЕРХЕНДА ===\n\n{target}\n", encoding="utf-8")
+            os.startfile(str(note_file))
+            return "write_note"
+
         elif cmd in ("media_play_pause", "media_next", "media_prev"):
             vk_map = {
-                "media_play_pause": 0xB3,  # VK_MEDIA_PLAY_PAUSE
-                "media_next": 0xB0,        # VK_MEDIA_NEXT_TRACK
-                "media_prev": 0xB1,        # VK_MEDIA_PREV_TRACK
+                "media_play_pause": 0xB3,
+                "media_next": 0xB0,
+                "media_prev": 0xB1,
             }
             _tap_vk(vk_map[cmd])
             return cmd
 
         elif cmd == "volume_up":
-            _tap_vk(0xAF, times=5)  # VK_VOLUME_UP
+            _tap_vk(0xAF, times=5)
             return "volume_up"
 
         elif cmd == "volume_down":
-            _tap_vk(0xAE, times=5)  # VK_VOLUME_DOWN
+            _tap_vk(0xAE, times=5)
             return "volume_down"
 
         elif cmd == "volume_mute":
-            _tap_vk(0xAD, times=1)  # VK_VOLUME_MUTE
+            _tap_vk(0xAD, times=1)
             return "volume_mute"
 
         elif cmd == "close_tab":
-            # Нажимаем Ctrl + W для закрытия активной вкладки
             VK_CONTROL = 0x11
             VK_W = 0x57
             ctypes.windll.user32.keybd_event(VK_CONTROL, 0, 0, 0)
@@ -260,10 +281,6 @@ def execute_pc_action(action_json: str) -> Optional[str]:
 
 
 def try_apply_rvc_voice_conversion(input_audio_path: Path, output_wav_path: Path) -> bool:
-    """
-    Этап 4: Если в папке backend/models/johnny_ru/ лежат файлы весов (.pth) и индекса (.index)
-    голоса Ильи Бледного и установлена библиотека rvc-python, конвертирует тембр через RVC v2.
-    """
     pth_files = list(RVC_MODEL_DIR.glob("*.pth"))
     if not pth_files:
         return False
@@ -272,8 +289,7 @@ def try_apply_rvc_voice_conversion(input_audio_path: Path, output_wav_path: Path
     try:
         from rvc_python.infer import RVCInference  # type: ignore
 
-        device = "cuda:0"
-        rvc = RVCInference(device=device)
+        rvc = RVCInference(device="cuda:0")
         rvc.load_model(str(pth_files[0]), version="v2", index_path=str(index_files[0]) if index_files else "")
         rvc.infer_file(str(input_audio_path), str(output_wav_path))
         return output_wav_path.exists()
@@ -282,27 +298,22 @@ def try_apply_rvc_voice_conversion(input_audio_path: Path, output_wav_path: Path
 
 
 def apply_relic_engram_dsp(wav_bytes: bytes) -> bytes:
-    """
-    Накладывает киберпанк-эффект биочипа Relic (лёгкий перегруз + металлический дабл-трек энграммы).
-    """
     try:
         rate, data = wavfile.read(io.BytesIO(wav_bytes))
         if data.dtype != np.float32:
             data = data.astype(np.float32) / np.iinfo(data.dtype).max
 
-        # Полосовой фильтр (срезаем глухие низы, подчёркиваем характерную середину энграммы)
         nyq = 0.5 * rate
         b, a = butter(2, [120.0 / nyq, min(7500.0 / nyq, 0.99)], btype="band")
         filtered = lfilter(b, a, data, axis=0)
 
-        # Короткая задержка (12 мс) для эффекта цифрового присутствия в голове Ви
         delay_samples = int(0.012 * rate)
         delayed = np.zeros_like(filtered)
         delayed[delay_samples:] = filtered[:-delay_samples]
-        mixed = 0.82 * data + 0.28 * delayed
+        echo_gain = 0.28 * RELIC_DSP_STRENGTH
+        mixed = 0.82 * data + echo_gain * delayed
 
-        # Мягкое насыщение (warm overdrive)
-        mixed = np.tanh(mixed * 1.15)
+        mixed = np.tanh(mixed * (1.0 + 0.15 * RELIC_DSP_STRENGTH))
         out_int16 = np.clip(mixed * 32767, -32768, 32767).astype(np.int16)
 
         out_buf = io.BytesIO()
@@ -312,8 +323,30 @@ def apply_relic_engram_dsp(wav_bytes: bytes) -> bytes:
         return wav_bytes
 
 
+def compute_wav_rms_envelope(wav_path: Path, window_ms: int = 30) -> List[float]:
+    """Этап 12: Вычисляет массив амплитуды громкости (RMS каждые 30 мс) для точного Lip-Sync челюсти."""
+    try:
+        if not wav_path.exists() or wav_path.suffix.lower() != ".wav":
+            return []
+        rate, data = wavfile.read(str(wav_path))
+        if data.ndim > 1:
+            data = data[:, 0]
+        arr = data.astype(np.float32)
+        max_val = float(np.max(np.abs(arr))) or 1.0
+        arr = arr / max_val
+
+        step = max(1, int(rate * (window_ms / 1000.0)))
+        envelope: List[float] = []
+        for idx in range(0, len(arr), step):
+            chunk = arr[idx : idx + step]
+            rms = float(np.sqrt(np.mean(chunk * chunk)))
+            envelope.append(round(min(1.0, rms * 2.4), 3))
+        return envelope[:600]
+    except Exception:
+        return []
+
+
 def synthesize_sapi_wav_fallback(text: str, out_wav: Path) -> bool:
-    """Локальный оффлайн-синтез русской речи через Windows SAPI5 (pywin32), если edge-tts недоступен."""
     try:
         import pythoncom
         import win32com.client
@@ -323,12 +356,11 @@ def synthesize_sapi_wav_fallback(text: str, out_wav: Path) -> bool:
             speaker = win32com.client.Dispatch("SAPI.SpVoice")
             stream = win32com.client.Dispatch("SAPI.SpFileStream")
 
-            # Ищем русский голос в системе (например, Pavel или Irina)
             voices = speaker.GetVoices()
             for i in range(voices.Count):
                 v = voices.Item(i)
                 desc = str(v.GetDescription()).lower()
-                if "ru" in desc or "russian" in desc or "рус" in desc or "pavel" in desc or "irina" in desc:
+                if any(k in desc for k in ("ru", "russian", "рус", "pavel", "irina")):
                     speaker.Voice = v
                     break
 
@@ -345,7 +377,8 @@ def synthesize_sapi_wav_fallback(text: str, out_wav: Path) -> bool:
 
 
 async def synthesize_johnny_voice(text: str) -> Optional[str]:
-    """Генерирует русскую речь Джонни, прогоняет через RVC (при наличии модели) и DSP-фильтр Relic."""
+    if not VOICE_ENABLED:
+        return None
     clean_text = text.replace("*", "").strip()
     if not clean_text:
         return None
@@ -364,7 +397,6 @@ async def synthesize_johnny_voice(text: str) -> Optional[str]:
     except Exception:
         source_for_dsp = None
 
-    # Если облачный edge-tts недоступен — используем мгновенный оффлайн-синтез Windows SAPI5 -> WAV
     if source_for_dsp is None:
         if synthesize_sapi_wav_fallback(clean_text, sapi_wav_path):
             source_for_dsp = sapi_wav_path
@@ -374,7 +406,6 @@ async def synthesize_johnny_voice(text: str) -> Optional[str]:
     if try_apply_rvc_voice_conversion(source_for_dsp, rvc_wav_path):
         source_for_dsp = rvc_wav_path
 
-    # Если исходник уже WAV (из SAPI или RVC), можно наложить фильтр Relic напрямую без ffmpeg
     if source_for_dsp.suffix.lower() == ".wav":
         try:
             processed = apply_relic_engram_dsp(source_for_dsp.read_bytes())
@@ -399,7 +430,6 @@ async def synthesize_johnny_voice(text: str) -> Optional[str]:
 
 
 async def resolve_ollama_model(need_vision: bool) -> str:
-    """Выбирает Vision-модель при запросе со скриншотом, если она скачана в Ollama, иначе базовую модель."""
     if not need_vision:
         return OLLAMA_MODEL
     try:
@@ -437,7 +467,6 @@ async def query_llm(user_prompt: str, screenshot_b64: Optional[str] = None) -> s
         except Exception as e:
             return f"Чумба, облачный канал связи глушат корпораты ({e}). Переключайся обратно на локальный чип Ollama!"
 
-    # По умолчанию: локальная Ollama (на RTX 5060 8GB отвечает за ~0.5 сек)
     ensure_ollama_running()
     selected_model = await resolve_ollama_model(bool(screenshot_b64))
     user_msg: dict = {"role": "user", "content": user_prompt}
@@ -469,19 +498,59 @@ async def health_check():
         "status": "online",
         "llm_mode": LLM_MODE,
         "ollama_model": OLLAMA_MODEL,
+        "voice_enabled": VOICE_ENABLED,
+        "dsp_strength": RELIC_DSP_STRENGTH,
         "rvc_model_loaded": bool(rvc_models),
         "rvc_files": rvc_models,
         "ffmpeg": find_ffmpeg_binary(),
     }
 
 
-@app.post("/mode")
-async def switch_llm_mode(req: ModeSwitchRequest):
-    global LLM_MODE, OPENAI_API_KEY
-    LLM_MODE = req.mode
-    if req.api_key:
+@app.post("/settings")
+async def update_settings(req: SettingsUpdateRequest):
+    global LLM_MODE, OPENAI_API_KEY, VOICE_ENABLED, RELIC_DSP_STRENGTH, TTS_PITCH
+    if req.llm_mode:
+        LLM_MODE = req.llm_mode
+    if req.api_key is not None:
         OPENAI_API_KEY = req.api_key
-    return {"status": "ok", "llm_mode": LLM_MODE}
+    if req.voice_enabled is not None:
+        VOICE_ENABLED = req.voice_enabled
+    if req.dsp_strength is not None:
+        RELIC_DSP_STRENGTH = max(0.0, min(2.0, req.dsp_strength))
+    if req.pitch:
+        TTS_PITCH = req.pitch
+    return {"status": "ok", "llm_mode": LLM_MODE, "voice_enabled": VOICE_ENABLED, "dsp_strength": RELIC_DSP_STRENGTH}
+
+
+@app.post("/listen", response_model=ChatResponse)
+async def listen_microphone_and_chat(active_window: Optional[str] = None):
+    """Этап 12: Запись голоса с микрофона (4 сек) и распознавание через faster-whisper (если установлен)."""
+    rec_wav = AUDIO_OUT_DIR / "mic_input.wav"
+    transcribed_text = ""
+    try:
+        import sounddevice as sd  # type: ignore
+
+        fs = 16000
+        recording = sd.rec(int(4.0 * fs), samplerate=fs, channels=1, dtype="int16")
+        sd.wait()
+        wavfile.write(str(rec_wav), fs, recording)
+
+        from faster_whisper import WhisperModel  # type: ignore
+
+        model = WhisperModel("base", device="auto", compute_type="int8")
+        segments, _ = model.transcribe(str(rec_wav), language="ru")
+        transcribed_text = " ".join(s.text for s in segments).strip()
+    except Exception:
+        transcribed_text = ""
+
+    if not transcribed_text:
+        return ChatResponse(
+            reply="Чумба, микрофон не отвечает или пакеты `faster-whisper` / `sounddevice` ещё не стоят. Жми TYPE или `Alt+J`!",
+            relic_glitch=True,
+            sprite_state="glitch",
+        )
+
+    return await chat_with_johnny(ChatRequest(message=transcribed_text, active_window=active_window))
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -504,8 +573,8 @@ async def chat_with_johnny(req: ChatRequest):
 
     final_reply = "\n".join(clean_lines).strip()
     audio_path = await synthesize_johnny_voice(final_reply)
+    audio_envelope = compute_wav_rms_envelope(Path(audio_path)) if audio_path else []
 
-    # Триггерим глитч биочипа, если Джонни упоминает корпорации, чип или выполняет действие
     lower_reply = final_reply.lower()
     glitch_keywords = ("арасак", "корпорат", "биочип", "relic", "глитч", "милитех", "сбой")
     guitar_keywords = ("гитар", "рок", "музык", "samurai", "самурай", "never fade away", "рифф", "spotify")
@@ -513,7 +582,7 @@ async def chat_with_johnny(req: ChatRequest):
     relic_glitch = bool(action_executed) or any(k in lower_reply for k in glitch_keywords)
 
     sprite_state = "talk"
-    if action_executed and ("spotify" in action_executed or "media_" in action_executed):
+    if action_executed and any(k in action_executed for k in ("spotify", "youtube", "media_")):
         sprite_state = "guitar"
     elif any(k in lower_reply for k in guitar_keywords):
         sprite_state = "guitar"
@@ -524,6 +593,7 @@ async def chat_with_johnny(req: ChatRequest):
         reply=final_reply,
         action_executed=action_executed,
         audio_path=audio_path,
+        audio_envelope=audio_envelope,
         relic_glitch=relic_glitch,
         sprite_state=sprite_state,
     )
