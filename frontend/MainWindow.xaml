@@ -1,7 +1,7 @@
 <Window x:Class="JohnnyOverlay.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="JohnnyOverlay" Width="390" Height="460"
+        Title="JohnnyOverlay" Width="390" Height="490"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize">
 
@@ -24,7 +24,7 @@
                 <!-- Верхняя плашка сбоя биочипа Relic -->
                 <Border x:Name="RelicStatusBanner" Background="#33FCEE09" BorderBrush="#FCEE09"
                         BorderThickness="1" Padding="6,2" Margin="0,0,0,5" Visibility="Collapsed">
-                    <TextBlock Text="⚠ СБОЙ БИОЧИПА RELIC // ОБНАРУЖЕНА АКТИВНОСТЬ ЭНГРАММЫ"
+                    <TextBlock Text="⚠ СБОЙ БИОЧИПА RELIC // СИНХРОНИЗАЦИЯ НЕЙРОМАТРИЦЫ"
                                Foreground="#FCEE09" FontFamily="Consolas" FontSize="9.5" FontWeight="Bold"/>
                 </Border>
 
@@ -41,7 +41,7 @@
                             <Rectangle x:Name="EqBar3" Width="3" Height="8" Fill="#FCEE09" Margin="1,0"/>
                             <Rectangle x:Name="EqBar4" Width="3" Height="12" Fill="#00F0FF" Margin="1,0"/>
                         </StackPanel>
-                        <TextBlock x:Name="ModeStatusText" Text="[RELIC v2.077]" Foreground="#FCEE09"
+                        <TextBlock x:Name="ModeStatusText" Text="[LIVE RIG 60FPS]" Foreground="#FCEE09"
                                    FontFamily="Consolas" FontSize="9.5"/>
                     </StackPanel>
                 </DockPanel>
@@ -53,7 +53,7 @@
             </StackPanel>
         </Border>
 
-        <!-- Контейнер 3D-рендера / голограммы Джонни Сильверхенда -->
+        <!-- Контейнер живого скелетного 2.5D-рига Джонни Сильверхенда (60 FPS) -->
         <Grid x:Name="AvatarContainer" Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Bottom"
               Margin="0,0,12,2" Cursor="Hand"
               MouseLeftButtonDown="Avatar_MouseLeftButtonDown"
@@ -68,7 +68,7 @@
                 </TransformGroup>
             </Grid.RenderTransform>
             <Grid.Effect>
-                <DropShadowEffect x:Name="JohnnyDropShadow" Color="#00F0FF" BlurRadius="22" ShadowDepth="0" Opacity="0.85"/>
+                <DropShadowEffect x:Name="JohnnyDropShadow" Color="#00F0FF" BlurRadius="18" ShadowDepth="0" Opacity="0.80"/>
             </Grid.Effect>
 
             <!-- Контекстное меню по правому клику -->
@@ -90,35 +90,100 @@
                 </ContextMenu>
             </Grid.ContextMenu>
 
-            <!-- Многослойный 3D-аватар с эффектом голографического двоящегося шлейфа Relic -->
-            <Grid Width="235" Height="285" ClipToBounds="False">
-                <!-- Задний хроматический шлейф энграммы (Ghost Layer) -->
-                <Image x:Name="JohnnyGhostImage" Width="235" Height="285" Stretch="Uniform"
-                       Opacity="0.28" RenderOptions.BitmapScalingMode="HighQuality">
-                    <Image.RenderTransform>
-                        <TranslateTransform x:Name="GhostTranslate" X="-4" Y="0"/>
-                    </Image.RenderTransform>
-                </Image>
+            <!-- Многослойный скелетный риг (пропорции 600x822 -> 240x329) -->
+            <Grid Width="240" Height="329" ClipToBounds="False">
 
-                <!-- Основной игровой 3D-рендер Джонни Сильверхенда -->
-                <Image x:Name="JohnnySpriteImage" Width="235" Height="285" Stretch="Uniform"
-                       RenderOptions.BitmapScalingMode="HighQuality"/>
+                <!-- 1. Скелетный риг (активен в режимах idle, talk, guitar) -->
+                <Grid x:Name="RigRootGrid" Width="240" Height="329" ClipToBounds="False">
+                    <!-- Нижняя часть тела (ремень и кожаные штаны) -->
+                    <Image x:Name="RigLowerImage" Width="240" Height="329" Stretch="Fill"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                    <!-- Дышащий торс + руки + голова (пивот на поясе: 0.525, 0.754) -->
+                    <Grid x:Name="TorsoContainer" Width="240" Height="329" RenderTransformOrigin="0.525,0.754">
+                        <Grid.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform x:Name="TorsoScale" ScaleX="1.0" ScaleY="1.0"/>
+                                <RotateTransform x:Name="TorsoRotate" Angle="0"/>
+                                <TranslateTransform x:Name="TorsoTranslate" X="0" Y="0"/>
+                            </TransformGroup>
+                        </Grid.RenderTransform>
+
+                        <!-- Слой бронежилета Samurai и шеи -->
+                        <Image x:Name="RigTorsoImage" Width="240" Height="329" Stretch="Fill"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                        <!-- Левая серебряная бионическая рука (пивот кибер-плеча: 0.753, 0.408) -->
+                        <Image x:Name="RigArmLeftImage" Width="240" Height="329" Stretch="Fill"
+                               RenderTransformOrigin="0.753,0.408" RenderOptions.BitmapScalingMode="HighQuality">
+                            <Image.RenderTransform>
+                                <RotateTransform x:Name="ArmLeftRotate" Angle="0"/>
+                            </Image.RenderTransform>
+                        </Image>
+
+                        <!-- Голова + челюсть Lip-Sync (пивот шеи: 0.525, 0.255 — следит за курсором мыши и кивает) -->
+                        <Grid x:Name="HeadContainer" Width="240" Height="329" RenderTransformOrigin="0.525,0.255">
+                            <Grid.RenderTransform>
+                                <TransformGroup>
+                                    <RotateTransform x:Name="HeadRotate" Angle="0"/>
+                                    <TranslateTransform x:Name="HeadTranslate" X="0" Y="0"/>
+                                </TransformGroup>
+                            </Grid.RenderTransform>
+
+                            <!-- Голова, очки-авиаторы и волосы -->
+                            <Image x:Name="RigHeadImage" Width="240" Height="329" Stretch="Fill"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                            <!-- Анимированная нижняя челюсть / борода (открывает рот в такт речи Lip-Sync) -->
+                            <Image x:Name="RigJawImage" Width="240" Height="329" Stretch="Fill"
+                                   RenderOptions.BitmapScalingMode="HighQuality">
+                                <Image.RenderTransform>
+                                    <TranslateTransform x:Name="JawTranslate" X="0" Y="0"/>
+                                </Image.RenderTransform>
+                            </Image>
+                        </Grid>
+
+                        <!-- Электрогитара Deluze Orphean (включается в режиме guitar) -->
+                        <Image x:Name="RigGuitarImage" Width="240" Height="329" Stretch="Fill"
+                               RenderTransformOrigin="0.52,0.62" Visibility="Collapsed"
+                               RenderOptions.BitmapScalingMode="HighQuality">
+                            <Image.RenderTransform>
+                                <RotateTransform x:Name="GuitarRotate" Angle="0"/>
+                            </Image.RenderTransform>
+                        </Image>
+
+                        <!-- Правая рука с дымящимся биочипом/сигаретой (пивот плеча: 0.316, 0.408 — курит, жестикулирует, играет рифф) -->
+                        <Grid Width="240" Height="329" RenderTransformOrigin="0.316,0.408">
+                            <Grid.RenderTransform>
+                                <RotateTransform x:Name="ArmRightRotate" Angle="0"/>
+                            </Grid.RenderTransform>
+                            <Image x:Name="RigArmRightImage" Width="240" Height="329" Stretch="Fill"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+                            <!-- Пульсирующий огонёк биочипа / сигареты в руке (координаты 18, 122 на холсте 240x329) -->
+                            <Ellipse x:Name="CigaretteEmber" Width="8" Height="8" Fill="#FF4500"
+                                     HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14,119,0,0"
+                                     Opacity="0.85" IsHitTestVisible="False">
+                                <Ellipse.Effect>
+                                    <BlurEffect Radius="5"/>
+                                </Ellipse.Effect>
+                            </Ellipse>
+                        </Grid>
+                    </Grid>
+
+                    <!-- Генератор живых клубов дыма от сигареты / биочипа (60 FPS частицы) -->
+                    <Canvas x:Name="SmokeCanvas" Width="240" Height="329" IsHitTestVisible="False"/>
+                </Grid>
+
+                <!-- 2. Полнокадровый оверлей для экстремальных состояний (glitch / drag) -->
+                <Image x:Name="SpecialStateImage" Width="240" Height="329" Stretch="Uniform"
+                       Visibility="Collapsed" RenderOptions.BitmapScalingMode="HighQuality"/>
 
                 <!-- Бегущий луч голографического сканирования Relic -->
                 <Border x:Name="ScanlineBeam" Width="210" Height="2" VerticalAlignment="Top"
-                        HorizontalAlignment="Center" Background="#5500F0FF" IsHitTestVisible="False">
+                        HorizontalAlignment="Center" Background="#4400F0FF" IsHitTestVisible="False">
                     <Border.RenderTransform>
                         <TranslateTransform x:Name="ScanlineTranslate" X="0" Y="20"/>
                     </Border.RenderTransform>
-                </Border>
-
-                <!-- Запасной силуэт, если папка assets/sprites пуста -->
-                <Border x:Name="FallbackCard" Width="150" Height="180" Background="#3300F0FF"
-                        BorderBrush="#00F0FF" BorderThickness="1.5" CornerRadius="6" Visibility="Collapsed">
-                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                        <TextBlock Text="🎸" FontSize="44" HorizontalAlignment="Center"/>
-                        <TextBlock Text="SILVERHAND" Foreground="#FCEE09" FontFamily="Consolas" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center"/>
-                    </StackPanel>
                 </Border>
             </Grid>
         </Grid>
@@ -126,7 +191,7 @@
         <!-- Быстрая панель действий Cyberpunk 2077 (чтобы вызвать Джонни в 1 клик) -->
         <Border x:Name="QuickActionBar" Grid.Row="2" HorizontalAlignment="Right" Margin="0,0,16,4"
                 Background="#E60B0F17" BorderBrush="#00F0FF" BorderThickness="1" CornerRadius="3" Padding="4,3"
-                Opacity="0.88">
+                Opacity="0.90">
             <StackPanel Orientation="Horizontal">
                 <Button Content="💬 ЧАТ (Alt+J)" Click="QuickChat_Click"
                         Background="#2200F0FF" Foreground="#00F0FF" BorderBrush="#00F0FF" BorderThickness="1"
