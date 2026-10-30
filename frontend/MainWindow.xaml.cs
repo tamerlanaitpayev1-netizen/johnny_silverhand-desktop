@@ -1,9 +1,12 @@
-// MainWindow.xaml.cs — C# (.NET WPF) Живой 60 FPS скелетный 2.5D-риг Джонни Сильверхенда (Live2D / Spine стиль)
-// Включает:
-// - Отслеживание курсора мыши головой Джонни (GetCursorPos)
-// - Реалистичный Lip-Sync (движение нижней челюсти и бороды синхронно с русской речью)
-// - Анимацию курения с поднимающейся рукой, тлеющим угольком и частицами дыма (60 FPS)
-// - Независимую жестикуляцию серебряной бионической рукой и игру на электрогитаре Samurai
+// MainWindow.xaml.cs — C# (.NET WPF) 60 FPS Движок в стиле Capri (YouTube Shorts sEAqdBnvUCU / capri-desktop)
+// Что нового по сравнению с прошлой версией:
+// 1. Посадка на край окна со свешенными ногами (Perch Pose): таз Джонни сидит прямо на верхней границе окна (rect.Top),
+//    а его ноги (rig_leg_left / rig_leg_right) свисают на заголовок окна и качаются в 60 FPS!
+// 2. Неблокирующая физика перетаскивания (Ragdoll Pendulum & Flailing): когда ты берёшь Джонни мышкой, он висит на курсоре,
+//    раскачивается как маятник от скорости мыши и отчаянно дрыгает руками и ногами.
+// 3. Гравитация и бросок (Toss & Squash-and-Stretch Bounce): если отпустить его в воздухе, он падает с ускорением
+//    на ближайшую рамку окна или панель задач и пружинит при приземлении со вспышкой глитчей.
+// 4. Щупальца глитчей (Glitch Tendrils), физика развевающихся волос, блик авиаторов и реакция на поглаживание головы (Head Pats).
 
 using System;
 using System.Collections.Generic;
@@ -20,9 +23,10 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
 using System.Windows.Threading;
-using Ellipse = System.Windows.Shapes.Ellipse;
 using Forms = System.Windows.Forms;
+using Path = System.IO.Path;
 
 namespace JohnnyOverlay
 {
@@ -82,6 +86,17 @@ namespace JohnnyOverlay
             public double MaxLife;
         }
 
+        private sealed class GlitchShard
+        {
+            public Polygon Visual = null!;
+            public double Life;
+            public double MaxLife;
+            public double Vx;
+            public double Vy;
+            public double OffsetX;
+            public double OffsetY;
+        }
+
         private readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
         private readonly MediaPlayer _player = new MediaPlayer();
         private readonly DispatcherTimer _windowTrackerTimer;
@@ -92,23 +107,47 @@ namespace JohnnyOverlay
 
         private readonly Dictionary<string, BitmapImage> _specialSprites = new Dictionary<string, BitmapImage>(StringComparer.OrdinalIgnoreCase);
         private readonly List<SmokeParticle> _smokeParticles = new List<SmokeParticle>();
+        private readonly List<GlitchShard> _glitchShards = new List<GlitchShard>();
         private readonly string _projectRoot;
         private Process? _backendProcess;
         private Forms.NotifyIcon? _trayIcon;
 
+        // Состояния физики и интерактивности в стиле Capri
         private bool _isDragging = false;
+        private bool _isFalling = false;
         private bool _isSpeaking = false;
         private bool _snapToActiveWindow = true;
         private bool _pseudoendotrizineMode = true;
         private bool _proactiveCheckInEnabled = true;
         private int _glitchTicksRemaining = 0;
 
+        // Координаты и скорости для маятника при перетаскивании и гравитации при броске
+        private Point _dragAnchorOffset;
+        private double _lastMouseScreenX;
+        private double _lastMouseScreenY;
+        private double _dragVx = 0.0;
+        private double _dragVy = 0.0;
+        private double _fallVx = 0.0;
+        private double _fallVy = 0.0;
+        private double _pendulumAngle = 0.0;
+        private double _pendulumAngularVel = 0.0;
+        private double _landingSquashTimer = 0.0;
+
+        // Детектор поглаживания головы курсором (Head Pats как у Капри)
+        private double _lastHoverX = 0.0;
+        private int _headPatDirectionChanges = 0;
+        private int _lastHeadPatSign = 0;
+        private double _headPatCooldown = 0.0;
+
         // Переменные скелетной физики (60 FPS)
         private double _time = 0.0;
         private double _currentHeadAngle = 0.0;
         private double _currentHeadX = 0.0;
+        private double _currentHairAngle = 0.0;
         private double _currentArmRightAngle = 0.0;
         private double _currentArmLeftAngle = 0.0;
+        private double _currentLegLeftAngle = 0.0;
+        private double _currentLegRightAngle = 0.0;
         private double _currentJawOpen = 0.0;
         private double _guitarModeTimer = 0.0;
 
@@ -124,8 +163,8 @@ namespace JohnnyOverlay
             InitializeTrayIcon();
 
             var workArea = SystemParameters.WorkArea;
-            Left = workArea.Right - Width - 24;
-            Top = workArea.Bottom - Height - 8;
+            Left = workArea.Right - Width - 20;
+            Top = workArea.Bottom - Height + 55; // Ноги свешиваются за край
 
             _player.MediaEnded += (_, _) =>
             {
@@ -135,7 +174,7 @@ namespace JohnnyOverlay
                 SetSpriteState("idle");
             };
 
-            // Таймер 60 FPS (16 мс) для живой скелетной анимации, слежения за мышью, Lip-Sync и дыма
+            // Главный цикл 60 FPS (16 мс): маятник, гравитация, болтание ногами, волосы, Lip-Sync, дым и щупальца глитчей
             _animTimer = new DispatcherTimer
             {
                 Interval = TimeSpan.FromMilliseconds(16)
@@ -143,10 +182,10 @@ namespace JohnnyOverlay
             _animTimer.Tick += OnSkeletalAnimationTick;
             _animTimer.Start();
 
-            // Таймер отслеживания активного окна Windows
+            // Таймер привязки к верхнему краю активного окна Windows
             _windowTrackerTimer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromMilliseconds(200)
+                Interval = TimeSpan.FromMilliseconds(120)
             };
             _windowTrackerTimer.Tick += OnWindowTrackerTick;
             _windowTrackerTimer.Start();
@@ -172,8 +211,9 @@ namespace JohnnyOverlay
             Loaded += async (_, _) =>
             {
                 await EnsurePythonBackendRunningAsync();
+                SpawnGlitchTendrils(18);
                 TriggerRelicGlitch(16, "talk");
-                await AskJohnnyAsync("Ты только что прогрузился на рабочий стол Ви. Поприветствуй его в своём стиле в 1 предложении.");
+                await AskJohnnyAsync("Ты только что телепортировался через биочип Relic на край окна Ви. Поприветствуй его в 1 коротком дерзком предложении.");
             };
         }
 
@@ -216,11 +256,15 @@ namespace JohnnyOverlay
         public void LoadRigAndSprites()
         {
             string rigDir = Path.Combine(_projectRoot, "assets", "rig");
+            RigHairBackImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_hair_back.png"));
+            RigLegLeftImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_leg_left.png"));
+            RigLegRightImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_leg_right.png"));
             RigLowerImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_lower.png"));
             RigTorsoImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_torso.png"));
             RigArmRightImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_arm_right.png"));
             RigArmLeftImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_arm_left.png"));
             RigHeadImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_head.png"));
+            RigGlassesGlintImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_glasses_glint.png"));
             RigJawImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_jaw.png"));
             RigGuitarImage.Source = LoadBitmap(Path.Combine(rigDir, "rig_guitar.png"));
 
@@ -239,13 +283,14 @@ namespace JohnnyOverlay
         {
             _currentSpriteState = state;
 
-            if (state == "glitch" || state == "drag")
+            // В режиме drag теперь работает полноценный живой скелетный риг (чтобы он дрыгал ногами и руками в 60 FPS как Капри!)
+            if (state == "glitch")
             {
-                if (_specialSprites.TryGetValue(state, out var bmp))
+                if (_specialSprites.TryGetValue("glitch", out var bmp))
                 {
                     SpecialStateImage.Source = bmp;
                     SpecialStateImage.Visibility = Visibility.Visible;
-                    RigRootGrid.Opacity = 0.15;
+                    RigRootGrid.Opacity = 0.25;
                 }
                 return;
             }
@@ -256,7 +301,7 @@ namespace JohnnyOverlay
             if (state == "guitar")
             {
                 RigGuitarImage.Visibility = Visibility.Visible;
-                _guitarModeTimer = 8.0; // Играет рифф 8 секунд
+                _guitarModeTimer = 8.5;
             }
             else
             {
@@ -264,11 +309,85 @@ namespace JohnnyOverlay
             }
         }
 
-        // --- Главный цикл 60 FPS процедурной скелетной анимации ---
+        // --- Спавнер багрово-голубых щупалец и осколков глитчей (Glitch Tendrils как в видео у Капри) ---
+        public void SpawnGlitchTendrils(int count = 12)
+        {
+            Color[] palette =
+            {
+                Color.FromArgb(220, 255, 42, 85),   // Багровый Blackwall / Edgerunners
+                Color.FromArgb(220, 0, 240, 255),   // Голубой Relic
+                Color.FromArgb(220, 252, 238, 9)    // Жёлтый Cyberpunk
+            };
+
+            for (int i = 0; i < count; i++)
+            {
+                double cx = 120.0 + (_rng.NextDouble() - 0.5) * 90.0;
+                double cy = 160.0 + (_rng.NextDouble() - 0.5) * 160.0;
+                double angle = _rng.NextDouble() * Math.PI * 2.0;
+                double len = 24.0 + _rng.NextDouble() * 48.0;
+                double thick = 3.0 + _rng.NextDouble() * 6.0;
+
+                var poly = new Polygon
+                {
+                    Fill = new SolidColorBrush(palette[_rng.Next(palette.Length)]),
+                    Points = new PointCollection
+                    {
+                        new Point(cx, cy - thick),
+                        new Point(cx + Math.Cos(angle) * len, cy + Math.Sin(angle) * len * 0.45),
+                        new Point(cx, cy + thick),
+                        new Point(cx - Math.Cos(angle) * (len * 0.35), cy)
+                    },
+                    IsHitTestVisible = false
+                };
+
+                GlitchTendrilsCanvas.Children.Add(poly);
+                _glitchShards.Add(new GlitchShard
+                {
+                    Visual = poly,
+                    Life = 0.0,
+                    MaxLife = 0.28 + _rng.NextDouble() * 0.35,
+                    Vx = Math.Cos(angle) * (45.0 + _rng.NextDouble() * 80.0),
+                    Vy = Math.Sin(angle) * (25.0 + _rng.NextDouble() * 50.0),
+                    OffsetX = 0.0,
+                    OffsetY = 0.0
+                });
+            }
+        }
+
+        private void UpdateGlitchTendrils(double dt)
+        {
+            // Случайные микро-глитчи в простое (как у Капри на видео)
+            if (_rng.NextDouble() < 0.025 && _glitchShards.Count < 6)
+            {
+                SpawnGlitchTendrils(2);
+            }
+
+            for (int i = _glitchShards.Count - 1; i >= 0; i--)
+            {
+                var s = _glitchShards[i];
+                s.Life += dt;
+                if (s.Life >= s.MaxLife)
+                {
+                    GlitchTendrilsCanvas.Children.Remove(s.Visual);
+                    _glitchShards.RemoveAt(i);
+                    continue;
+                }
+
+                s.OffsetX += s.Vx * dt;
+                s.OffsetY += s.Vy * dt;
+                s.Visual.RenderTransform = new TranslateTransform(s.OffsetX, s.OffsetY);
+                s.Visual.Opacity = 1.0 - (s.Life / s.MaxLife);
+            }
+        }
+
+        // --- Главный цикл 60 FPS процедурной скелетной анимации и физики ---
         private void OnSkeletalAnimationTick(object? sender, EventArgs e)
         {
             const double dt = 0.016;
             _time += dt;
+
+            if (_headPatCooldown > 0)
+                _headPatCooldown -= dt;
 
             if (_guitarModeTimer > 0)
             {
@@ -277,56 +396,167 @@ namespace JohnnyOverlay
                     SetSpriteState(_isSpeaking ? "talk" : "idle");
             }
 
-            // 1. Бегущий голографический луч сканирования по высоте модели
-            ScanlineTranslate.Y = ((Math.Sin(_time * 1.4) + 1.0) * 0.5) * 305.0 + 10.0;
+            // 0. Физика падения с гравитацией после броска мышкой (Toss & Gravity Drop)
+            if (_isFalling && !_isDragging)
+            {
+                _fallVy += 2100.0 * dt; // Ускорение свободного падения
+                Left += _fallVx * dt;
+                Top += _fallVy * dt;
+                _fallVx *= 0.96;
 
-            // 2. Живое глубокое дыхание грудной клетки и плеч
-            double breath = Math.Sin(_time * 2.1);
-            TorsoScale.ScaleY = 1.0 + breath * 0.012;
-            TorsoScale.ScaleX = 1.0 + breath * 0.008;
-            TorsoTranslate.Y = -breath * 1.6;
-            TorsoRotate.Angle = Math.Sin(_time * 1.05) * 0.8;
+                double floorTop = GetTargetPerchPosition(out double targetLeft);
+                var workArea = SystemParameters.WorkArea;
+                Left = Math.Clamp(Left, workArea.Left - 180, workArea.Right - Width + 20);
 
-            // 3. Отслеживание курсора мыши головой Джонни + кивание во время речи/гитары
+                if (Top >= floorTop)
+                {
+                    Top = floorTop;
+                    _isFalling = false;
+                    _fallVx = 0.0;
+                    _fallVy = 0.0;
+                    // Эффект пружинящего приземления (Squash & Stretch) + вспышка щупалец Relic
+                    _landingSquashTimer = 0.26;
+                    SpawnGlitchTendrils(10);
+                    TriggerRelicGlitch(6, _isSpeaking ? "talk" : "idle");
+                }
+            }
+
+            // Пружинящее сжатие/растяжение при приземлении на окно
+            if (_landingSquashTimer > 0)
+            {
+                _landingSquashTimer -= dt;
+                double s = Math.Sin((_landingSquashTimer / 0.26) * Math.PI);
+                AvatarScale.ScaleX = 1.0 + s * 0.16;
+                AvatarScale.ScaleY = 1.0 - s * 0.14;
+            }
+            else
+            {
+                AvatarScale.ScaleX += (1.0 - AvatarScale.ScaleX) * 0.25;
+                AvatarScale.ScaleY += (1.0 - AvatarScale.ScaleY) * 0.25;
+            }
+
+            // 1. Физика маятника всего тела при перетаскивании за шкирку (Pendulum Ragdoll)
+            double targetPendulum = _isDragging
+                ? Math.Clamp(-_dragVx * 0.045, -34.0, 34.0)
+                : (_isFalling ? Math.Clamp(_fallVx * 0.025, -18.0, 18.0) : 0.0);
+
+            double springForce = (targetPendulum - _pendulumAngle) * 140.0;
+            _pendulumAngularVel = (_pendulumAngularVel + springForce * dt) * 0.82;
+            _pendulumAngle += _pendulumAngularVel * dt;
+            AvatarPendulumRotate.Angle = _pendulumAngle;
+
+            // Затухание скорости мыши, если курсор остановился во время удержания
+            _dragVx *= 0.80;
+            _dragVy *= 0.80;
+
+            // 2. Бегущий голографический луч сканирования
+            ScanlineTranslate.Y = ((Math.Sin(_time * 1.5) + 1.0) * 0.5) * 305.0 + 10.0;
+
+            // 3. Живое дыхание торса и покачивание в такт музыке / речи
+            double breath = Math.Sin(_time * 2.3);
+            TorsoScale.ScaleY = 1.0 + breath * 0.013;
+            TorsoScale.ScaleX = 1.0 + breath * 0.009;
+            TorsoTranslate.Y = -breath * 1.8;
+            TorsoRotate.Angle = _isDragging
+                ? Math.Sin(_time * 24.0) * 4.5
+                : Math.Sin(_time * 1.15) * 1.2;
+
+            // 4. Независимое качание свешенных ног над заголовком окна (Perch Leg Swing & Flailing)
+            double targetLegL;
+            double targetLegR;
+            if (_isDragging || _isFalling)
+            {
+                // Отчаянно болтает ногами в воздухе, когда ты тащишь его курсором (как Капри!)
+                targetLegL = Math.Sin(_time * 26.0) * 22.0 + Math.Clamp(-_dragVx * 0.03, -15.0, 15.0);
+                targetLegR = -Math.Sin(_time * 26.0) * 22.0 + Math.Clamp(-_dragVx * 0.03, -15.0, 15.0);
+                LegLeftTranslate.Y = Math.Abs(Math.Sin(_time * 26.0)) * -5.0;
+                LegRightTranslate.Y = Math.Abs(Math.Cos(_time * 26.0)) * -5.0;
+            }
+            else if (_currentSpriteState == "guitar")
+            {
+                // Отбивает ритм ботинками по заголовку окна под рифф Samurai
+                targetLegL = Math.Sin(_time * 14.0) * 9.5;
+                targetLegR = Math.Cos(_time * 14.0) * 9.5;
+                LegLeftTranslate.Y = Math.Abs(Math.Sin(_time * 14.0)) * -3.0;
+                LegRightTranslate.Y = 0.0;
+            }
+            else
+            {
+                // Спокойно болтает свешенными с окна ногами в 60 FPS
+                targetLegL = Math.Sin(_time * 2.6) * 5.2;
+                targetLegR = Math.Sin(_time * 2.6 + Math.PI * 0.85) * 5.2;
+                LegLeftTranslate.Y = Math.Sin(_time * 2.6) * 1.5;
+                LegRightTranslate.Y = -Math.Sin(_time * 2.6) * 1.5;
+            }
+            _currentLegLeftAngle += (targetLegL - _currentLegLeftAngle) * 0.18;
+            _currentLegRightAngle += (targetLegR - _currentLegRightAngle) * 0.18;
+            LegLeftRotate.Angle = _currentLegLeftAngle;
+            LegRightRotate.Angle = _currentLegRightAngle;
+
+            // 5. Отслеживание курсора мыши головой + развевание волос + блик очков-авиаторов
             double targetHeadAngle = 0.0;
             double targetHeadX = 0.0;
             if (GetCursorPos(out POINT mousePt))
             {
-                double headCenterX = Left + Width - 130;
-                double headCenterY = Top + 140;
-                double dx = (mousePt.X - headCenterX) / 420.0;
-                double dy = (mousePt.Y - headCenterY) / 420.0;
-                targetHeadAngle = Math.Clamp(dx * 5.5, -6.5, 6.5);
-                targetHeadX = Math.Clamp(dx * 2.5, -3.0, 3.0);
-                HeadTranslate.Y = Math.Clamp(dy * 2.0, -2.5, 2.5);
+                double headCenterX = Left + Width - 125;
+                double headCenterY = Top + 95;
+                double dx = (mousePt.X - headCenterX) / 380.0;
+                double dy = (mousePt.Y - headCenterY) / 380.0;
+                targetHeadAngle = Math.Clamp(dx * 6.5, -7.5, 7.5);
+                targetHeadX = Math.Clamp(dx * 3.0, -3.5, 3.5);
+                HeadTranslate.Y = Math.Clamp(dy * 2.2, -2.8, 2.8);
             }
 
-            if (_isSpeaking)
+            if (_isDragging)
             {
-                // Энергичные наклоны головы в такт словам
-                targetHeadAngle += Math.Sin(_time * 9.5) * 2.8 + Math.Cos(_time * 6.2) * 1.5;
+                targetHeadAngle = Math.Sin(_time * 22.0) * 8.0;
+            }
+            else if (_isSpeaking)
+            {
+                targetHeadAngle += Math.Sin(_time * 9.5) * 3.2 + Math.Cos(_time * 6.2) * 1.8;
             }
             else if (_currentSpriteState == "guitar")
             {
-                // Качает головой в рок-н-ролльный бит Samurai
-                targetHeadAngle = Math.Sin(_time * 14.0) * 5.5;
-                HeadTranslate.Y = Math.Abs(Math.Sin(_time * 14.0)) * 3.5;
+                targetHeadAngle = Math.Sin(_time * 14.0) * 6.5;
+                HeadTranslate.Y = Math.Abs(Math.Sin(_time * 14.0)) * 4.0;
             }
 
-            _currentHeadAngle += (targetHeadAngle - _currentHeadAngle) * 0.14;
-            _currentHeadX += (targetHeadX - _currentHeadX) * 0.14;
+            _currentHeadAngle += (targetHeadAngle - _currentHeadAngle) * 0.15;
+            _currentHeadX += (targetHeadX - _currentHeadX) * 0.15;
             HeadRotate.Angle = _currentHeadAngle;
             HeadTranslate.X = _currentHeadX;
 
-            // 4. Реалистичный Lip-Sync (движение нижней челюсти и бороды при разговоре)
+            // Физика длинных волос Джонни (вторичное колебание с запаздыванием от головы и ветра)
+            double targetHair = -_currentHeadAngle * 0.85 + Math.Sin(_time * 3.1) * 3.2 - _pendulumAngle * 0.45;
+            _currentHairAngle += (targetHair - _currentHairAngle) * 0.10;
+            HairRotate.Angle = _currentHairAngle;
+            HairSkew.AngleX = _currentHairAngle * 0.65;
+
+            // Периодическое «моргание» / пробегающий неоновый блик по линзам авиаторов (каждые ~4.2 сек)
+            double blinkPhase = _time % 4.2;
+            if (blinkPhase < 0.14)
+            {
+                RigGlassesGlintImage.Opacity = 0.10; // Прищур / погасание блика
+                GlintTranslate.X = 2.5;
+            }
+            else if (blinkPhase < 0.35)
+            {
+                RigGlassesGlintImage.Opacity = 1.0;  // Яркая кибер-вспышка на очках
+                GlintTranslate.X = (blinkPhase - 0.14) * 12.0;
+            }
+            else
+            {
+                RigGlassesGlintImage.Opacity = 0.78 + Math.Sin(_time * 3.0) * 0.12;
+                GlintTranslate.X = _currentHeadX * -0.5;
+            }
+
+            // 6. Реалистичный Lip-Sync (движение нижней челюсти и бороды при разговоре)
             double targetJawY = 0.0;
             if (_isSpeaking)
             {
-                // Многочастотная огибающая русской речи (слоговая артикуляция)
                 double syllable = Math.Sin(_time * 18.0) * Math.Cos(_time * 11.0) + Math.Sin(_time * 27.0) * 0.5;
-                targetJawY = Math.Clamp(Math.Abs(syllable) * 3.4, 0.4, 4.2);
+                targetJawY = Math.Clamp(Math.Abs(syllable) * 3.6, 0.4, 4.4);
 
-                // Обновляем столбики эквалайзера в HUD
                 EqBar1.Height = 4 + Math.Abs(Math.Sin(_time * 19.0)) * 11;
                 EqBar2.Height = 5 + Math.Abs(Math.Cos(_time * 23.0)) * 11;
                 EqBar3.Height = 4 + Math.Abs(Math.Sin(_time * 15.0)) * 10;
@@ -335,64 +565,55 @@ namespace JohnnyOverlay
             _currentJawOpen += (targetJawY - _currentJawOpen) * 0.35;
             JawTranslate.Y = _currentJawOpen;
 
-            // 5. Анимация правой руки (курение в idle, жестикуляция в talk, бой по струнам в guitar)
-            double targetArmRight = Math.Sin(_time * 1.7) * 1.8;
+            // 7. Правая и левая руки (курение, барахтанье при перетаскивании, жестикуляция, гитара)
+            double targetArmRight = Math.Sin(_time * 1.7) * 2.2;
+            double targetArmLeft = -Math.Sin(_time * 1.7) * 1.8;
             bool isTakingDrag = false;
 
-            if (_currentSpriteState == "guitar")
+            if (_isDragging || _isFalling)
             {
-                // Быстрый гитарный чес правой рукой по струнам Deluze Orphean
-                targetArmRight = -16.0 + Math.Sin(_time * 28.0) * 7.5;
-                GuitarRotate.Angle = Math.Sin(_time * 14.0) * 3.2;
+                // Размахивает обеими руками в воздухе при перетаскивании (Flailing как у Капри)
+                targetArmRight = -28.0 + Math.Sin(_time * 28.0) * 18.0;
+                targetArmLeft = 24.0 + Math.Cos(_time * 28.0) * 18.0;
+            }
+            else if (_currentSpriteState == "guitar")
+            {
+                targetArmRight = -16.0 + Math.Sin(_time * 28.0) * 8.0;
+                targetArmLeft = -6.0 + Math.Cos(_time * 14.0) * 4.0;
+                GuitarRotate.Angle = Math.Sin(_time * 14.0) * 3.5;
             }
             else if (_isSpeaking)
             {
-                // Выразительная жестикуляция рукой во время реплики
-                targetArmRight = -5.5 + Math.Sin(_time * 7.5) * 4.8 + Math.Cos(_time * 4.2) * 2.5;
+                targetArmRight = -6.0 + Math.Sin(_time * 7.5) * 5.2 + Math.Cos(_time * 4.2) * 2.8;
+                targetArmLeft = -4.0 + Math.Sin(_time * 6.0 + 1.2) * 4.2;
             }
             else
             {
-                // Периодическая затяжка сигаретой каждые ~9 секунд в режиме ожидания
                 double cycle = _time % 9.5;
                 if (cycle > 6.2 && cycle < 8.6)
                 {
-                    targetArmRight = -11.5; // Поднимает руку с чипом/сигаретой ближе к лицу
+                    targetArmRight = -11.5;
                     isTakingDrag = true;
                 }
             }
 
-            _currentArmRightAngle += (targetArmRight - _currentArmRightAngle) * 0.12;
+            _currentArmRightAngle += (targetArmRight - _currentArmRightAngle) * 0.14;
+            _currentArmLeftAngle += (targetArmLeft - _currentArmLeftAngle) * 0.14;
             ArmRightRotate.Angle = _currentArmRightAngle;
-
-            // Пульсация тлеющего уголька сигареты / биочипа
-            CigaretteEmber.Opacity = isTakingDrag
-                ? 0.95
-                : (0.55 + Math.Sin(_time * 4.5) * 0.25);
-
-            // 6. Анимация левой серебряной бионической руки
-            double targetArmLeft = -Math.Sin(_time * 1.7) * 1.5;
-            if (_currentSpriteState == "guitar")
-            {
-                targetArmLeft = -6.0 + Math.Cos(_time * 14.0) * 3.5;
-            }
-            else if (_isSpeaking)
-            {
-                targetArmLeft = -3.5 + Math.Sin(_time * 6.0 + 1.2) * 3.8;
-            }
-            _currentArmLeftAngle += (targetArmLeft - _currentArmLeftAngle) * 0.12;
             ArmLeftRotate.Angle = _currentArmLeftAngle;
 
-            // 7. Обновление частиц дыма сигареты (60 FPS)
+            CigaretteEmber.Opacity = isTakingDrag ? 0.96 : (0.55 + Math.Sin(_time * 4.5) * 0.25);
+
+            // 8. Частицы дыма и щупальца глитчей (60 FPS)
             UpdateSmokeParticles(dt, isTakingDrag);
+            UpdateGlitchTendrils(dt);
         }
 
         private void UpdateSmokeParticles(double dt, bool intenseSmoke)
         {
-            // Спавним новую частицу дыма из кончика сигареты
             double spawnChance = intenseSmoke ? 0.42 : 0.18;
-            if (_currentSpriteState != "guitar" && _rng.NextDouble() < spawnChance && _smokeParticles.Count < 22)
+            if (_currentSpriteState != "guitar" && !_isDragging && _rng.NextDouble() < spawnChance && _smokeParticles.Count < 22)
             {
-                // Смещаем точку спавна дыма с учётом угла поворота правой руки
                 double rad = _currentArmRightAngle * Math.PI / 180.0;
                 double spawnX = 18.0 + Math.Sin(rad) * 12.0;
                 double spawnY = 118.0 + Math.Sin(rad) * 28.0;
@@ -440,6 +661,138 @@ namespace JohnnyOverlay
                 p.Visual.Opacity = (1.0 - progress) * 0.45;
                 Canvas.SetLeft(p.Visual, p.X - p.Size * 0.5);
                 Canvas.SetTop(p.Visual, p.Y - p.Size * 0.5);
+            }
+        }
+
+        // --- Вычисление координаты посадки на верхний край окна со свешенными ногами (Perch Ledge) ---
+        private double GetTargetPerchPosition(out double targetLeft)
+        {
+            var workArea = SystemParameters.WorkArea;
+            targetLeft = workArea.Right - Width - 16;
+            // Смещение +68 px вниз позволяет ногам Джонни (ниже пояса) свисать прямо на панель задач или заголовок окна!
+            double defaultFloorTop = workArea.Bottom - Height + 68;
+
+            IntPtr fg = GetForegroundWindow();
+            if (fg != IntPtr.Zero && GetActiveWindowTitle() != "Рабочий стол Windows")
+            {
+                if (GetWindowRect(fg, out RECT rect))
+                {
+                    // Если активное окно не развёрнуто на весь экран, сажаем Джонни прямо на его верхнюю рамку (rect.Top)
+                    if (rect.Top > 160 && rect.Right > 420 && rect.Right <= workArea.Right - 10)
+                    {
+                        targetLeft = Math.Clamp(rect.Right - Width - 24, workArea.Left - 180, workArea.Right - Width - 8);
+                        // Таз Джонни (y = Height - 82) ложится ровно на линию rect.Top, а ботинки свисают на заголовок окна!
+                        return Math.Clamp(rect.Top - Height + 82, workArea.Top + 4, defaultFloorTop);
+                    }
+                }
+            }
+            return defaultFloorTop;
+        }
+
+        private void OnWindowTrackerTick(object? sender, EventArgs e)
+        {
+            if (_isDragging || _isFalling || !_snapToActiveWindow || Visibility != Visibility.Visible) return;
+
+            double targetTop = GetTargetPerchPosition(out double targetLeft);
+            Left += (targetLeft - Left) * 0.20;
+            Top += (targetTop - Top) * 0.20;
+        }
+
+        // --- Неблокирующее перетаскивание мышкой с физикой маятника, броском и поглаживанием головы ---
+        private void Avatar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount == 2)
+            {
+                OpenChatBox();
+                return;
+            }
+
+            _isDragging = true;
+            _isFalling = false;
+            _dragAnchorOffset = e.GetPosition(this);
+
+            if (GetCursorPos(out POINT pt))
+            {
+                _lastMouseScreenX = pt.X;
+                _lastMouseScreenY = pt.Y;
+            }
+
+            if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
+            {
+                _snapToActiveWindow = false;
+                MenuSnapItem.Header = "📌 Посадка на край активного окна: ВЫКЛ";
+            }
+
+            SpawnGlitchTendrils(8);
+            SpeechText.Text = "Эй-эй, чумба, полегче с курсором! Куда ты меня тащишь?!";
+            AvatarContainer.CaptureMouse();
+        }
+
+        private void Avatar_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (_isDragging)
+            {
+                if (GetCursorPos(out POINT pt))
+                {
+                    double dx = pt.X - _lastMouseScreenX;
+                    double dy = pt.Y - _lastMouseScreenY;
+                    _dragVx = (_dragVx * 0.45) + (dx / 0.016) * 0.55;
+                    _dragVy = (_dragVy * 0.45) + (dy / 0.016) * 0.55;
+
+                    Left = pt.X - _dragAnchorOffset.X;
+                    Top = pt.Y - _dragAnchorOffset.Y;
+
+                    _lastMouseScreenX = pt.X;
+                    _lastMouseScreenY = pt.Y;
+                }
+                return;
+            }
+
+            // Пасхалка Head Pats (поглаживание курсором по голове Джонни, как в capri-desktop)
+            Point localPos = e.GetPosition(AvatarContainer);
+            if (localPos.Y > 15 && localPos.Y < 105 && _headPatCooldown <= 0)
+            {
+                double deltaX = localPos.X - _lastHoverX;
+                if (Math.Abs(deltaX) > 6.0)
+                {
+                    int sign = Math.Sign(deltaX);
+                    if (sign != _lastHeadPatSign && _lastHeadPatSign != 0)
+                    {
+                        _headPatDirectionChanges++;
+                        if (_headPatDirectionChanges >= 6)
+                        {
+                            _headPatDirectionChanges = 0;
+                            _headPatCooldown = 6.0;
+                            SpawnGlitchTendrils(10);
+                            TriggerRelicGlitch(10, "idle");
+                            SpeechText.Text = "Ви, руки убрал от моих авиаторов! Я тебе легенда Найт-Сити, а не ручной тамагочи.";
+                        }
+                    }
+                    _lastHeadPatSign = sign;
+                    _lastHoverX = localPos.X;
+                }
+            }
+        }
+
+        private void Avatar_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_isDragging) return;
+
+            _isDragging = false;
+            AvatarContainer.ReleaseMouseCapture();
+
+            // Если отпустили в воздухе выше точки опоры — включаем гравитацию и инерцию броска (Toss)
+            double perchTop = GetTargetPerchPosition(out _);
+            if (_snapToActiveWindow && Top < perchTop - 12)
+            {
+                _isFalling = true;
+                _fallVx = Math.Clamp(_dragVx * 0.35, -650.0, 650.0);
+                _fallVy = Math.Clamp(_dragVy * 0.25, -400.0, 250.0);
+            }
+            else
+            {
+                _landingSquashTimer = 0.20;
+                SpawnGlitchTendrils(8);
             }
         }
 
@@ -521,7 +874,7 @@ namespace JohnnyOverlay
             }
 
             var trayMenu = new Forms.ContextMenuStrip();
-            trayMenu.Items.Add("💬 Написать Джонни (Alt+J)", null, (_, _) => Dispatcher.Invoke(OpenChatBox));
+            trayMenu.Items.Add("✎ Написать Джонни (Alt+J)", null, (_, _) => Dispatcher.Invoke(OpenChatBox));
             trayMenu.Items.Add("Показать / Скрыть Джонни (Ctrl+Alt+H)", null, (_, _) => Dispatcher.Invoke(ToggleOverlayVisibility));
             trayMenu.Items.Add("👁 Прокомментировать экран (Vision)", null, async (_, _) =>
                 await Dispatcher.InvokeAsync(() => AskJohnnyAsync("Посмотри на мой экран и прокомментируй, чем я сейчас занимаюсь.", watchScreen: true)));
@@ -586,6 +939,7 @@ namespace JohnnyOverlay
             {
                 Visibility = Visibility.Visible;
                 Activate();
+                SpawnGlitchTendrils(14);
                 TriggerRelicGlitch(12, "idle");
             }
         }
@@ -613,7 +967,6 @@ namespace JohnnyOverlay
                 }
                 catch
                 {
-                    // Игнорируем при закрытии
                 }
             }
         }
@@ -632,45 +985,11 @@ namespace JohnnyOverlay
             return "Рабочий стол Windows";
         }
 
-        private void OnWindowTrackerTick(object? sender, EventArgs e)
-        {
-            if (_isDragging || !_snapToActiveWindow || Visibility != Visibility.Visible) return;
-
-            IntPtr fg = GetForegroundWindow();
-            if (fg == IntPtr.Zero) return;
-
-            string title = GetActiveWindowTitle();
-            if (title == "Рабочий стол Windows") return;
-
-            var workArea = SystemParameters.WorkArea;
-            if (GetWindowRect(fg, out RECT rect))
-            {
-                double targetLeft;
-                double targetTop;
-
-                if (rect.Top > 120 && rect.Right > 350 && rect.Right < workArea.Right - 20)
-                {
-                    targetLeft = rect.Right - Width - 20;
-                    targetTop = rect.Top - 110;
-                }
-                else
-                {
-                    targetLeft = workArea.Right - Width - 20;
-                    targetTop = workArea.Bottom - Height - 8;
-                }
-
-                targetLeft = Math.Clamp(targetLeft, workArea.Left + 8, workArea.Right - Width - 8);
-                targetTop = Math.Clamp(targetTop, workArea.Top + 8, workArea.Bottom - Height - 8);
-
-                Left += (targetLeft - Left) * 0.22;
-                Top += (targetTop - Top) * 0.22;
-            }
-        }
-
         private async void OnProactiveCheckInTick(object? sender, EventArgs e)
         {
             if (!_proactiveCheckInEnabled || Visibility != Visibility.Visible) return;
             string activeTitle = GetActiveWindowTitle();
+            SpawnGlitchTendrils(12);
             TriggerRelicGlitch(14, "talk");
             await AskJohnnyAsync($"Ты внезапно проявился через биочип Relic. Прокомментируй в 1-2 дерзких предложениях то, чем сейчас занят Ви в окне «{activeTitle}».");
         }
@@ -699,12 +1018,12 @@ namespace JohnnyOverlay
             }
 
             _glitchTicksRemaining--;
-            AvatarTranslate.X = _rng.Next(-10, 11);
+            AvatarTranslate.X = _rng.Next(-11, 12);
             AvatarTranslate.Y = _rng.Next(-4, 5);
             AvatarContainer.Opacity = _rng.NextDouble() * 0.35 + 0.65;
             JohnnyDropShadow.Color = (_glitchTicksRemaining % 2 == 0)
                 ? Color.FromRgb(0, 240, 255)
-                : Color.FromRgb(252, 238, 9);
+                : Color.FromRgb(255, 42, 85);
         }
 
         private void Avatar_MouseEnter(object sender, MouseEventArgs e)
@@ -717,34 +1036,6 @@ namespace JohnnyOverlay
         {
             QuickActionBar.Opacity = 0.88;
             JohnnyDropShadow.BlurRadius = 18;
-        }
-
-        private void Avatar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-        {
-            if (e.ClickCount == 2)
-            {
-                OpenChatBox();
-                return;
-            }
-
-            _isDragging = true;
-            SetSpriteState("drag");
-
-            if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
-            {
-                _snapToActiveWindow = false;
-                MenuSnapItem.Header = "📌 Привязка к активным окнам: ВЫКЛ";
-            }
-
-            try
-            {
-                DragMove();
-            }
-            finally
-            {
-                _isDragging = false;
-                SetSpriteState(_isSpeaking ? "talk" : "idle");
-            }
         }
 
         private void QuickChat_Click(object sender, RoutedEventArgs e)
@@ -813,6 +1104,7 @@ namespace JohnnyOverlay
 
                 if (glitch)
                 {
+                    SpawnGlitchTendrils(14);
                     TriggerRelicGlitch(14, targetState);
                 }
                 else
@@ -832,6 +1124,7 @@ namespace JohnnyOverlay
             {
                 _isSpeaking = false;
                 VoiceEqPanel.Visibility = Visibility.Collapsed;
+                SpawnGlitchTendrils(10);
                 TriggerRelicGlitch(12, "idle");
                 SpeechText.Text = "Ви, твой Python-сервер энграммы молчит. Перезапусти Start-Johnny.bat, чумба!";
             }
@@ -844,6 +1137,7 @@ namespace JohnnyOverlay
 
         private void MenuPlayGuitar_Click(object sender, RoutedEventArgs e)
         {
+            SpawnGlitchTendrils(12);
             TriggerRelicGlitch(10, "guitar");
             SpeechText.Text = "🎸 Врубай Samurai — Never Fade Away на полную катушку, чумба!";
         }
@@ -852,8 +1146,8 @@ namespace JohnnyOverlay
         {
             _snapToActiveWindow = !_snapToActiveWindow;
             MenuSnapItem.Header = _snapToActiveWindow
-                ? "📌 Привязка к активным окнам: ВКЛ"
-                : "📌 Привязка к активным окнам: ВЫКЛ";
+                ? "📌 Посадка на край активного окна: ВКЛ"
+                : "📌 Посадка на край активного окна: ВЫКЛ";
         }
 
         private void MenuToggleControl_Click(object sender, RoutedEventArgs e)
@@ -862,6 +1156,7 @@ namespace JohnnyOverlay
             MenuControlItem.Header = _pseudoendotrizineMode
                 ? "💊 Псевдоэндотризин (Управление ПК): ВКЛ"
                 : "💊 Псевдоэндотризин (Управление ПК): ВЫКЛ";
+            SpawnGlitchTendrils(10);
             TriggerRelicGlitch(10, "idle");
         }
 
