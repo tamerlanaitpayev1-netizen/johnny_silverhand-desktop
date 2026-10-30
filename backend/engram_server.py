@@ -78,6 +78,40 @@ TTS_PITCH = os.getenv("RELIC_TTS_PITCH", "-8Hz")
 TTS_RATE = os.getenv("RELIC_TTS_RATE", "+5%")
 
 
+def find_ollama_binary() -> Optional[str]:
+    """Находит исполняемый файл ollama.exe."""
+    found = shutil.which("ollama")
+    if found:
+        return found
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    candidate = os.path.join(local_appdata, "Programs", "Ollama", "ollama.exe")
+    if os.path.isfile(candidate):
+        return candidate
+    return None
+
+
+def ensure_ollama_running() -> None:
+    """Автоматически запускает фоновый сервер Ollama, если он ещё не поднят."""
+    if LLM_MODE != "ollama":
+        return
+    ollama_bin = find_ollama_binary()
+    if not ollama_bin:
+        return
+    try:
+        import urllib.request
+        urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=0.8)
+    except Exception:
+        try:
+            subprocess.Popen(
+                [ollama_bin, "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+            )
+        except Exception:
+            pass
+
+
 def find_ffmpeg_binary() -> str:
     """Находит исполняемый файл ffmpeg даже если PATH ещё не обновился после установки через winget."""
     found = shutil.which("ffmpeg")
@@ -404,6 +438,7 @@ async def query_llm(user_prompt: str, screenshot_b64: Optional[str] = None) -> s
             return f"Чумба, облачный канал связи глушат корпораты ({e}). Переключайся обратно на локальный чип Ollama!"
 
     # По умолчанию: локальная Ollama (на RTX 5060 8GB отвечает за ~0.5 сек)
+    ensure_ollama_running()
     selected_model = await resolve_ollama_model(bool(screenshot_b64))
     user_msg: dict = {"role": "user", "content": user_prompt}
     if screenshot_b64 and ("vl" in selected_model or "llava" in selected_model or "moondream" in selected_model):
